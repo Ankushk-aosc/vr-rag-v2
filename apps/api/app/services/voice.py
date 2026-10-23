@@ -47,6 +47,48 @@ def clean_text_for_speech(text: str) -> str:
     return text
 
 
+def detect_audio_suffix(audio_bytes: bytes, fallback_suffix: str = ".wav") -> str:
+    """Inspect leading magic bytes to ensure temporary disk file matches container demuxer."""
+    if not audio_bytes or len(audio_bytes) < 4:
+        return fallback_suffix
+    header = audio_bytes[:16]
+    if header.startswith(b"\x1aE\xdf\xa3"):
+        return ".webm"
+    if header.startswith(b"RIFF"):
+        return ".wav"
+    if header.startswith(b"OggS"):
+        return ".ogg"
+    if header.startswith(b"ID3") or header.startswith(b"\xff\xfb") or header.startswith(b"\xff\xf3"):
+        return ".mp3"
+    if b"ftyp" in header:
+        return ".m4a"
+    if header.startswith(b"fLaC"):
+        return ".flac"
+    return fallback_suffix
+
+
+def transcribe_with_groq(audio_bytes: bytes, suffix: str = ".webm") -> Optional[str]:
+    """Transcribe speech using Groq cloud Whisper with fast inference."""
+    if not settings.GROQ_API_KEY or settings.GROQ_API_KEY.startswith("your-"):
+        return None
+    try:
+        from groq import Groq
+        client = Groq(api_key=settings.GROQ_API_KEY)
+        fname = f"audio{suffix}"
+        res = client.audio.transcriptions.create(
+            file=(fname, audio_bytes),
+            model=settings.GROQ_STT_MODEL or "whisper-large-v3-turbo",
+            response_format="json",
+            language="en"
+        )
+        if res and res.text:
+            logger.info("Groq STT transcribed speech successfully.")
+            return res.text.strip()
+    except Exception as e:
+        logger.info(f"Groq STT unavailable or model permission pending ({e}). Falling back to local Whisper.")
+    return None
+
+
 def transcribe_audio_file(audio_path: Path) -> str:
     """Transcribe an audio file using local faster-whisper."""
     model = get_whisper_model()
@@ -61,8 +103,19 @@ def transcribe_audio_file(audio_path: Path) -> str:
 
 
 def transcribe_audio_bytes(audio_bytes: bytes, file_suffix: str = ".wav") -> str:
-    """Save audio bytes to a temp file and transcribe with local Whisper."""
-    with tempfile.NamedTemporaryFile(suffix=file_suffix, delete=False) as temp_audio:
+    """
+    Transcribe audio bytes using Groq Cloud STT when available,
+    falling back seamlessly to local faster-whisper on CPU.
+    """
+    detected_suffix = detect_audio_suffix(audio_bytes, fallback_suffix=file_suffix)
+
+    # 1. Attempt rapid Groq Cloud STT
+    cloud_transcript = transcribe_with_groq(audio_bytes, suffix=detected_suffix)
+    if cloud_transcript:
+        return cloud_transcript
+
+    # 2. Local fallback using faster-whisper
+    with tempfile.NamedTemporaryFile(suffix=detected_suffix, delete=False) as temp_audio:
         temp_path = Path(temp_audio.name)
         temp_audio.write(audio_bytes)
         temp_audio.flush()

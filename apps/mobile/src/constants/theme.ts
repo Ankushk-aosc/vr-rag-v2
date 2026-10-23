@@ -1,0 +1,38 @@
+export const THEME = {
+  dark: {
+    background: "#000000",
+    surface: "rgba(20, 20, 26, 0.85)",
+    surfaceSolid: "#14141A",
+    card: "#1E1B2E",
+    cardBorder: "rgba(167, 139, 250, 0.25)",
+    border: "rgba(255, 255, 255, 0.10)",
+    text: "#F5F5F7",
+    textMuted: "#8E8E93",
+    accent: "#7C3AED",
+    accentLight: "#A78BFA",
+    accentDark: "#581C87",
+    gold: "#D4AF37",
+    goldMuted: "rgba(212, 175, 55, 0.20)",
+    success: "#30D158",
+    danger: "#FF453A",
+  },
+  light: {
+    background: "#F5F5F7",
+    surface: "rgba(255, 255, 255, 0.90)",
+    surfaceSolid: "#FFFFFF",
+    card: "#FFFFFF",
+    cardBorder: "rgba(109, 40, 217, 0.15)",
+    border: "rgba(0, 0, 0, 0.08)",
+    text: "#1A1A1E",
+    textMuted: "#6E6E73",
+    accent: "#6D28D9",
+    accentLight: "#8B5CF6",
+    accentDark: "#4C1D95",
+    gold: "#D4AF37",
+    goldMuted: "rgba(212, 175, 55, 0.15)",
+    success: "#30D158",
+    danger: "#FF453A",
+  },
+};
+
+export type ThemeMode = "dark" | "light";

@@ -23,25 +23,28 @@ def extract_pdf(file_path: Path) -> List[ExtractedPage]:
     doc = fitz.open(str(file_path))
     pages: List[ExtractedPage] = []
     
+    # If the document has many pages, extract text directly without slow heuristic path finder
+    skip_table_finder = len(doc) > 20
+    
     for page_idx in range(len(doc)):
         page = doc[page_idx]
         text = page.get_text("text").strip()
         
-        # Extract tables if present using PyMuPDF table finder
         extracted_tables = []
-        try:
-            tabs = page.find_tables()
-            for tab in tabs:
-                df_table = tab.extract()
-                if df_table and len(df_table) > 1:
-                    header = [str(cell or "").strip() for cell in df_table[0]]
-                    md_rows = [" | ".join(header), " | ".join(["---"] * len(header))]
-                    for row in df_table[1:]:
-                        md_rows.append(" | ".join([str(c or "").strip() for c in row]))
-                    extracted_tables.append("\n".join(md_rows))
-        except Exception:
-            pass  # Fallback gracefully to raw text extraction if table finder encounters unstructured layout
-
+        if not skip_table_finder:
+            try:
+                tabs = page.find_tables()
+                for tab in tabs:
+                    df_table = tab.extract()
+                    if df_table and len(df_table) > 1:
+                        header = [str(cell or "").strip() for cell in df_table[0]]
+                        md_rows = [" | ".join(header), " | ".join(["---"] * len(header))]
+                        for row in df_table[1:]:
+                            md_rows.append(" | ".join([str(c or "").strip() for c in row]))
+                        extracted_tables.append("\n".join(md_rows))
+            except Exception:
+                pass
+        
         pages.append(ExtractedPage(page_number=page_idx + 1, text=text, tables=extracted_tables))
         
     doc.close()
@@ -58,17 +61,36 @@ def extract_docx(file_path: Path) -> List[ExtractedPage]:
             
     tables = []
     for table in doc.tables:
+        # Fast XML extraction across rows
         rows_data = []
-        for row in table.rows:
-            rows_data.append([cell.text.strip() for cell in row.cells])
+        for tr in table._tbl.xpath('./w:tr'):
+            row = [tc.xpath('string(.)').strip() for tc in tr.xpath('./w:tc')]
+            if any(row):
+                rows_data.append(row)
+                
         if rows_data:
             header = rows_data[0]
-            md_table = [" | ".join(header), " | ".join(["---"] * len(header))]
-            for r in rows_data[1:]:
-                md_table.append(" | ".join(r))
-            tables.append("\n".join(md_table))
+            data_rows = rows_data[1:]
             
-    # DOCX doesn't have hard page boundaries without a renderer; treat as sequential flow
+            # Batch large tables into blocks of 50 rows preserving column headers
+            batch_size = 50
+            if len(data_rows) > batch_size:
+                for b_idx in range(0, len(data_rows), batch_size):
+                    batch = data_rows[b_idx:b_idx + batch_size]
+                    md_table = [
+                        f"### Table Rows {b_idx + 1} to {b_idx + len(batch)}",
+                        " | ".join(header),
+                        " | ".join(["---"] * len(header))
+                    ]
+                    for r in batch:
+                        md_table.append(" | ".join(r))
+                    tables.append("\n".join(md_table))
+            else:
+                md_table = [" | ".join(header), " | ".join(["---"] * len(header))]
+                for r in data_rows:
+                    md_table.append(" | ".join(r))
+                tables.append("\n".join(md_table))
+            
     return [ExtractedPage(page_number=1, text="\n\n".join(full_text_parts), tables=tables)]
 
 
@@ -82,18 +104,63 @@ def extract_xlsx(file_path: Path) -> List[ExtractedPage]:
         if not rows:
             continue
             
-        md_lines = [f"### Sheet: {sheetname}"]
-        # Find header and non-empty rows
         valid_rows = [[str(cell if cell is not None else "").strip() for cell in r] for r in rows if any(r)]
-        if valid_rows:
-            header = valid_rows[0]
+        if not valid_rows:
+            continue
+            
+        header = valid_rows[0]
+        data_rows = valid_rows[1:]
+        
+        batch_size = 50
+        sheet_tables = []
+        if len(data_rows) > batch_size:
+            for b_idx in range(0, len(data_rows), batch_size):
+                batch = data_rows[b_idx:b_idx + batch_size]
+                md_lines = [
+                    f"### Sheet: {sheetname} (Rows {b_idx + 1} to {b_idx + len(batch)})",
+                    " | ".join(header),
+                    " | ".join(["---"] * len(header))
+                ]
+                for r in batch:
+                    md_lines.append(" | ".join(r))
+                sheet_tables.append("\n".join(md_lines))
+        else:
+            md_lines = [f"### Sheet: {sheetname}"]
             md_lines.append(" | ".join(header))
             md_lines.append(" | ".join(["---"] * len(header)))
-            for r in valid_rows[1:]:
+            for r in data_rows:
                 md_lines.append(" | ".join(r))
+            sheet_tables.append("\n".join(md_lines))
                 
+        pages.append(ExtractedPage(page_number=idx + 1, text=f"Sheet: {sheetname}", tables=sheet_tables))
+        
+    return pages
+
+
+def extract_csv(file_path: Path) -> List[ExtractedPage]:
+    import csv
+    with file_path.open("r", encoding="utf-8", errors="replace") as f:
+        reader = list(csv.reader(f))
+    if not reader:
+        return [ExtractedPage(page_number=1, text="")]
+        
+    header = reader[0]
+    pages = []
+    chunk_size = 50
+    data_rows = reader[1:]
+    total_pages = max(1, (len(data_rows) + chunk_size - 1) // chunk_size)
+    
+    for page_num in range(1, total_pages + 1):
+        start = (page_num - 1) * chunk_size
+        end = min(start + chunk_size, len(data_rows))
+        batch = data_rows[start:end]
+        md_lines = [f"### CSV Data Table (Rows {start + 1} to {end} of {len(data_rows)})"]
+        md_lines.append(" | ".join(header))
+        md_lines.append(" | ".join(["---"] * len(header)))
+        for r in batch:
+            md_lines.append(" | ".join(r))
         table_str = "\n".join(md_lines)
-        pages.append(ExtractedPage(page_number=idx + 1, text=f"Sheet: {sheetname}", tables=[table_str]))
+        pages.append(ExtractedPage(page_number=page_num, text=f"CSV Records Rows {start + 1}-{end}", tables=[table_str]))
         
     return pages
 
@@ -106,6 +173,8 @@ def extract_document(file_path: Path, mime_type: str) -> List[ExtractedPage]:
         return extract_docx(file_path)
     elif suffix in [".xlsx", ".xls"] or "spreadsheet" in mime_type:
         return extract_xlsx(file_path)
+    elif suffix == ".csv" or "csv" in mime_type:
+        return extract_csv(file_path)
     elif suffix in [".txt", ".md"]:
         text = file_path.read_text(encoding="utf-8", errors="replace")
         return [ExtractedPage(page_number=1, text=text)]

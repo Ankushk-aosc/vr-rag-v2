@@ -1,7 +1,7 @@
 import uuid
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, Field
 from app.db import sqlite
 from app.services import auth
 
@@ -9,14 +9,14 @@ router = APIRouter(prefix="/api/auth", tags=["Authentication & Family Access"])
 
 
 class RegisterRequest(BaseModel):
-    email: EmailStr
+    email: str = Field(..., min_length=5, description="Email address")
     password: str = Field(..., min_length=8, description="Minimum 8 characters")
     full_name: str = Field(..., min_length=2)
     family_entity_name: str = Field("Smith Family Trust", description="Family office or trust name")
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr
+    email: str = Field(..., min_length=5, description="Email address")
     password: str
 
 

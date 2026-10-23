@@ -7,15 +7,31 @@
 :root {
   --font-inter: 'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif;
   --font-mono: 'JetBrains Mono', 'SF Mono', monospace;
+  --bg-primary: #000000;
+  --text-primary: #F5F5F7;
+  --glass-bg: rgba(20, 20, 26, 0.75);
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --accent-purple: #7C3AED;
+  --accent-purple-glow: rgba(124, 58, 237, 0.35);
+}
+
+.light {
+  --bg-primary: #F5F5F7;
+  --text-primary: #1C1C1E;
+  --glass-bg: rgba(255, 255, 255, 0.85);
+  --glass-border: rgba(0, 0, 0, 0.08);
+  --accent-purple: #6D28D9;
+  --accent-purple-glow: rgba(109, 40, 217, 0.20);
 }
 
 body {
-  background-color: #000000;
-  color: #F5F5F7;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
   font-family: var(--font-inter);
   overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  transition: background-color 0.3s ease, color 0.3s ease;
 }
 
 /* Tabular lining figures for banking and currency precision */
@@ -33,60 +49,41 @@ body {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.15);
+  background: rgba(124, 58, 237, 0.25);
   border-radius: 9999px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.3);
+  background: rgba(124, 58, 237, 0.45);
 }
 
 /* Apple Sovereign Liquid Glass Surfaces */
 .apple-glass {
-  background: rgba(20, 20, 24, 0.72);
+  background: var(--glass-bg);
   backdrop-filter: blur(24px);
   -webkit-backdrop-filter: blur(24px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.7);
+  border: 1px solid var(--glass-border);
+  box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.4);
+}
+
+.light .apple-glass {
+  box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.08), 0 0 0 1px rgba(0, 0, 0, 0.05);
 }
 
 .apple-glass-interactive {
-  background: rgba(22, 22, 26, 0.65);
+  background: var(--glass-bg);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--glass-border);
   transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .apple-glass-interactive:hover {
-  background: rgba(30, 30, 36, 0.85);
-  border-color: rgba(255, 255, 255, 0.16);
+  border-color: rgba(124, 58, 237, 0.3);
   transform: translateY(-1px);
 }
 
-/* Backward compatibility aliases */
-.aurora-glass {
-  background: rgba(20, 20, 24, 0.75);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.7);
-}
-
-.aurora-glass-interactive {
-  background: rgba(22, 22, 26, 0.65);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-.aurora-glass-interactive:hover {
-  background: rgba(30, 30, 36, 0.85);
-  border-color: rgba(255, 255, 255, 0.16);
-}
-
-/* Apple Siri Fluid Multi-Chromatic Wave Ribbon Animation */
-@keyframes siri-fluid-wave {
+/* Aether Fluid Dynamic Wave Ribbon Animation (Royal Purple & Gold palette) */
+@keyframes aether-fluid-wave {
   0% {
     background-position: 0% 50%;
   }
@@ -98,15 +95,15 @@ body {
   }
 }
 
-.siri-wave-gradient {
+.aether-wave-gradient {
   background: linear-gradient(
     90deg,
-    #00B4A0,
-    #30D158,
-    #0A84FF,
+    #7C3AED,
+    #A78BFA,
+    #6D28D9,
     #D4AF37,
-    #00B4A0
+    #7C3AED
   );
   background-size: 300% 300%;
-  animation: siri-fluid-wave 4s ease infinite;
+  animation: aether-fluid-wave 3.5s ease infinite;
 }

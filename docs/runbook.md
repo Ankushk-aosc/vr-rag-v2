@@ -115,6 +115,17 @@ npm run dev
 ```
 * **Frontend Cockpit:** Open [http://localhost:3000](http://localhost:3000) in your browser.
 
+### D. Start the Expo Mobile App (`apps/mobile`)
+In a fourth terminal:
+```powershell
+cd d:\VR-RAG\apps\mobile
+npx expo start
+```
+* **Expo Go:** Scan the interactive QR code with your iOS Camera or Android Expo Go app.
+* **Android Emulator:** Press `a` in terminal to launch in an Android Virtual Device (AVD).
+* **iOS Simulator:** Press `i` in terminal to launch in iOS Simulator (macOS).
+* **Web Preview:** Press `w` in terminal to test the mobile layout in your browser.
+
 ---
 
 ## 5. Running the Automated Test Suites

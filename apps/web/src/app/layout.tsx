@@ -2,9 +2,9 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "The Sovereign Pavilion | Australian Family Financial Office",
+  title: "Aether Sovereign | Spatial Financial Pavilion",
   description:
-    "Apple-grade voice-first financial document knowledge assistant for Australian family offices with YouTube-style View in VR WebXR spatial computing.",
+    "Aether Sovereign: Sovereign voice-first spatial financial intelligence pavilion for Australian family offices with stereoscopic VR WebXR spatial computing.",
 };
 
 export const viewport: Viewport = {

@@ -88,7 +88,9 @@ async def ask_by_voice(
     file_suffix = Path(file.filename).suffix or ".wav"
     transcript = voice.transcribe_audio_bytes(file_bytes, file_suffix=file_suffix)
 
-    if not transcript or len(transcript.strip()) < 2:
+    clean_t = transcript.strip().lower().rstrip(".,!?")
+    SILENCE_HALLUCINATIONS = {"you", "thank you", "thanks for watching", "subtitles by", "bye", "[music]", "[applause]"}
+    if not transcript or len(clean_t) < 2 or clean_t in SILENCE_HALLUCINATIONS:
         return VoiceAskResponse(
             user_transcript="",
             answer="No audible speech detected. Please press the microphone and speak your financial question.",

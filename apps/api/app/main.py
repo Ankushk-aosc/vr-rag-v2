@@ -14,7 +14,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Aurora Spatial Financial RAG API (Australia)",
+    title="Aether Sovereign Financial RAG API (Australia)",
     description=(
         "Privacy-preserving, voice-first financial RAG assistant for Australian family offices. "
         "Integrates Pinecone vector indexing with zero-leakage local SQLite text storage."
@@ -23,15 +23,18 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS configuration for web and WebXR clients
+# CORS configuration for web, LAN, and WebXR/Expo mobile clients
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
         "http://127.0.0.1:3000",
         "http://localhost:3001",
-        "http://127.0.0.1:3001"
+        "http://127.0.0.1:3001",
+        "http://localhost:8081",
+        "http://127.0.0.1:8081",
     ],
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

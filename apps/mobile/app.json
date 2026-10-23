@@ -1,0 +1,24 @@
+{
+  "expo": {
+    "name": "Sovereign Pavilion",
+    "slug": "sovereign-pavilion",
+    "version": "1.0.0",
+    "orientation": "default",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.sovereign.pavilion"
+    },
+    "android": {
+      "package": "com.sovereign.pavilion",
+      "adaptiveIcon": {
+        "backgroundColor": "#000000",
+        "foregroundImage": "./assets/android-icon-foreground.png"
+      }
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    }
+  }
+}

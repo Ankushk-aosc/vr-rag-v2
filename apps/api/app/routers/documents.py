@@ -19,7 +19,9 @@ ALLOWED_MIME_TYPES = {
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
     "application/vnd.ms-excel": ".xls",
     "text/plain": ".txt",
-    "text/markdown": ".md"
+    "text/markdown": ".md",
+    "text/csv": ".csv",
+    "application/csv": ".csv"
 }
 
 
@@ -166,6 +168,37 @@ async def list_documents(
     # Fallback to general list if anonymous (development convenience)
     docs = sqlite.get_all_documents()
     return [DocumentResponse(**d) for d in docs]
+
+
+@router.get("/suggestions", response_model=List[str])
+async def get_document_suggestions(family_entity_id: str = "default_family"):
+    """Generate dynamic financial query suggestions based on actual indexed documents in the database."""
+    docs = sqlite.get_documents_by_entity(family_entity_id, "family_member")
+    if not docs:
+        docs = sqlite.get_all_documents()
+
+    if not docs:
+        return [
+            "Deposit financial records into the vault to generate insights",
+            "Ask questions about AUD balances or portfolios"
+        ]
+
+    doc_names = [d["original_name"] for d in docs]
+    has_aapl = any("aapl" in name.lower() or "financial_data" in name.lower() for name in doc_names)
+
+    if has_aapl:
+        return [
+            "AAPL closing price & volume on 2020-04-01",
+            "Historical trading volume & daily returns in AAPL records",
+            "Summary of AAPL metrics across 11,558 rows",
+            "Highest recorded daily volatility and trade volume"
+        ]
+
+    suggestions = []
+    for d in docs[:4]:
+        clean_name = Path(d["original_name"]).stem.replace("_", " ")
+        suggestions.append(f"Key financial details and figures in {clean_name}")
+    return suggestions
 
 
 @router.get("/{document_id}", response_model=DocumentResponse)

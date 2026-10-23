@@ -35,5 +35,16 @@ class Settings(BaseSettings):
     DEFAULT_CURRENCY: str = "AUD"
     FINANCIAL_YEAR_BOUNDARY_MONTH: int = 7  # July 1
 
+    # Groq Cloud LLM
+    GROQ_API_KEY: Optional[str] = None
+    GROQ_MODEL: str = "openai/gpt-oss-120b"
+    LLM_PROVIDER: str = "groq"  # "groq" or "ollama"
+
+    # Local Whisper Speech-to-Text & Voice
+    WHISPER_MODEL_SIZE: str = "base.en"
+    WHISPER_DEVICE: str = "cpu"
+    TTS_ENGINE: str = "local"
+    GROQ_STT_MODEL: str = "whisper-large-v3-turbo"
+
 
 settings = Settings()

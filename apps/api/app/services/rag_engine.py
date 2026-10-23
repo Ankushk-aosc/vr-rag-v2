@@ -17,6 +17,47 @@ RULES:
 """
 
 
+_groq_client = None
+
+
+def get_groq_client():
+    global _groq_client
+    if _groq_client is None and settings.GROQ_API_KEY:
+        from groq import AsyncGroq
+        _groq_client = AsyncGroq(api_key=settings.GROQ_API_KEY)
+    return _groq_client
+
+
+async def query_groq_llm(user_content: str) -> str:
+    client = get_groq_client()
+    if not client:
+        return "[Groq Error: GROQ_API_KEY is not configured in .env]"
+        
+    try:
+        completion = await client.chat.completions.create(
+            model=settings.GROQ_MODEL,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_content}
+            ],
+            temperature=1,
+            max_completion_tokens=2048,
+            top_p=1,
+            reasoning_effort="medium",
+            stream=False,
+            stop=None
+        )
+        return completion.choices[0].message.content or ""
+    except Exception as e:
+        err_str = str(e)
+        if "model_permission_blocked_org" in err_str:
+            return (
+                f"Groq Configuration Notice: Model '{settings.GROQ_MODEL}' is currently blocked at your organization limits level. "
+                f"Please open https://console.groq.com/settings/limits and enable '{settings.GROQ_MODEL}' to start generating answers."
+            )
+        return f"[Groq Error: {err_str}]"
+
+
 async def query_local_ollama(prompt: str) -> str:
     url = f"{settings.OLLAMA_BASE_URL}/api/generate"
     payload = {
@@ -44,6 +85,15 @@ async def query_local_ollama(prompt: str) -> str:
         )
     except Exception as e:
         return f"[Error connecting to local LLM: {str(e)}]"
+
+
+async def generate_llm_response(prompt: str) -> str:
+    if settings.LLM_PROVIDER == "groq" and settings.GROQ_API_KEY:
+        res = await query_groq_llm(prompt)
+        if not res.startswith("[Groq Request Error"):
+            return res
+        return await query_local_ollama(prompt)
+    return await query_local_ollama(prompt)
 
 
 async def execute_rag_query(
@@ -121,8 +171,8 @@ async def execute_rag_query(
         f"FACTUAL ANSWER (in AUD where applicable, with precise citations):"
     )
     
-    # 5. Synthesize answer with local Ollama
-    answer = await query_local_ollama(prompt)
+    # 5. Synthesize answer with configured LLM (Groq or Ollama)
+    answer = await generate_llm_response(prompt)
     
     return {
         "answer": answer,

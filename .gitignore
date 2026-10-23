@@ -1,5 +1,3 @@
-# Agent Customizations (Mandatory per Agent Guidelines)
-.agents/
 
 # Environment Variables & Secrets
 .env
@@ -65,3 +63,12 @@ Thumbs.db
 .coverage
 htmlcov/
 .pytest_cache/
+
+# Agent Config & Cache
+.agents
+.agents/
+.expo/
+*.log
+.claude/
+**/.expo/
+**/.claude/
