@@ -64,11 +64,3 @@ Thumbs.db
 htmlcov/
 .pytest_cache/
 
-# Agent Config & Cache
-.agents
-.agents/
-.expo/
-*.log
-.claude/
-**/.expo/
-**/.claude/
