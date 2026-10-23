@@ -2,8 +2,13 @@
 
 import React, { useEffect, useRef } from "react";
 import * as THREE from "three";
+import { setupWebXrControllers } from "../lib/webxr";
 
-export function SpatialScene() {
+interface SpatialSceneProps {
+  onRendererReady?: (renderer: THREE.WebGLRenderer) => void;
+}
+
+export function SpatialScene({ onRendererReady }: SpatialSceneProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -26,7 +31,17 @@ export function SpatialScene() {
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.setSize(container.clientWidth, container.clientHeight);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    
+    // Enable WebXR on the renderer
+    renderer.xr.enabled = true;
     container.appendChild(renderer.domElement);
+
+    if (onRendererReady) {
+      onRendererReady(renderer);
+    }
+
+    // Setup WebXR 6DoF Laser Controllers
+    const { controller1, controller2 } = setupWebXrControllers(scene, renderer);
 
     // 2. Cyber-Grid Floor
     const gridHelper = new THREE.GridHelper(30, 30, 0x00f0ff, 0x1a1a3a);
@@ -78,7 +93,6 @@ export function SpatialScene() {
       scene.add(p);
       pillars.push(p);
 
-      // Cyan wireframe edge
       const edges = new THREE.EdgesGeometry(pillarGeometry);
       const line = new THREE.LineSegments(
         edges,
@@ -87,7 +101,7 @@ export function SpatialScene() {
       p.add(line);
     });
 
-    // 5. Floating Star / Particle Dust
+    // 5. Floating Star Dust
     const particleCount = 180;
     const particlesGeometry = new THREE.BufferGeometry();
     const positions = new Float32Array(particleCount * 3);
@@ -116,19 +130,20 @@ export function SpatialScene() {
     pointLight.position.set(0, 3, 2);
     scene.add(pointLight);
 
-    // 7. Interactive Mouse / Touch Drag (Orbit Controls)
+    // 7. Interactive Orbit Drag Controls (Active when not in WebXR)
     let isDragging = false;
     let previousMousePosition = { x: 0, y: 0 };
     let cameraAngleY = 0;
     let cameraAngleX = 0;
 
     const onMouseDown = (e: MouseEvent) => {
+      if (renderer.xr.isPresenting) return;
       isDragging = true;
       previousMousePosition = { x: e.clientX, y: e.clientY };
     };
 
     const onMouseMove = (e: MouseEvent) => {
-      if (!isDragging) return;
+      if (!isDragging || renderer.xr.isPresenting) return;
       const deltaX = e.clientX - previousMousePosition.x;
       const deltaY = e.clientY - previousMousePosition.y;
 
@@ -152,12 +167,10 @@ export function SpatialScene() {
     window.addEventListener("mousemove", onMouseMove);
     window.addEventListener("mouseup", onMouseUp);
 
-    // 8. Animation Loop
-    let animationFrameId: number;
+    // 8. Unified WebXR-Safe Animation Loop
     let clock = new THREE.Clock();
 
-    const animate = () => {
-      animationFrameId = requestAnimationFrame(animate);
+    renderer.setAnimationLoop(() => {
       const elapsedTime = clock.getElapsedTime();
 
       // Rotate Rings
@@ -175,13 +188,11 @@ export function SpatialScene() {
       particleSystem.rotation.y = elapsedTime * 0.03;
 
       renderer.render(scene, camera);
-    };
-
-    animate();
+    });
 
     // 9. Resize Handling
     const handleResize = () => {
-      if (!container) return;
+      if (!container || renderer.xr.isPresenting) return;
       camera.aspect = container.clientWidth / container.clientHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(container.clientWidth, container.clientHeight);
@@ -190,7 +201,7 @@ export function SpatialScene() {
     window.addEventListener("resize", handleResize);
 
     return () => {
-      cancelAnimationFrame(animationFrameId);
+      renderer.setAnimationLoop(null);
       container.removeEventListener("mousedown", onMouseDown);
       window.removeEventListener("mousemove", onMouseMove);
       window.removeEventListener("mouseup", onMouseUp);
@@ -205,10 +216,9 @@ export function SpatialScene() {
   return (
     <div className="relative w-full h-full min-h-[300px] rounded-2xl overflow-hidden border border-aurora-cyan/30 shadow-glass">
       <div ref={containerRef} className="w-full h-full cursor-grab active:cursor-grabbing" />
-      {/* 3D Viewport Telemetry Overlay */}
       <div className="absolute top-3 left-3 pointer-events-none flex items-center space-x-2 text-[10px] font-space text-aurora-cyan uppercase tracking-wider bg-aurora-panel/80 px-2.5 py-1 rounded-md border border-aurora-border/60 backdrop-blur-md">
         <span className="w-2 h-2 rounded-full bg-aurora-cyan animate-ping" />
-        <span>3D Spatial Room Active • Drag to Orbit</span>
+        <span>3D Spatial Room • WebXR Enabled</span>
       </div>
     </div>
   );

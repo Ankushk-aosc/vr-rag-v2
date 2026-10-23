@@ -2,20 +2,29 @@
 
 import React, { useEffect, useState } from "react";
 import { Glasses, QrCode, Smartphone, X, CheckCircle, ExternalLink, Sparkles } from "lucide-react";
+import { isMobileDevice } from "../lib/webxr";
 
 interface VrLaunchModalProps {
   isOpen: boolean;
   onClose: () => void;
   onEnterWebXr: () => void;
+  onLaunchStereo?: () => void;
 }
 
-export function VrLaunchModal({ isOpen, onClose, onEnterWebXr }: VrLaunchModalProps) {
+export function VrLaunchModal({
+  isOpen,
+  onClose,
+  onEnterWebXr,
+  onLaunchStereo,
+}: VrLaunchModalProps) {
   const [webxrSupported, setWebxrSupported] = useState<boolean>(false);
   const [sessionUrl, setSessionUrl] = useState<string>("");
+  const [isMobile, setIsMobile] = useState<boolean>(false);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
       setSessionUrl(window.location.href);
+      setIsMobile(isMobileDevice());
       if ("xr" in navigator) {
         // @ts-ignore
         navigator.xr?.isSessionSupported("immersive-vr").then((supported: boolean) => {
@@ -70,7 +79,7 @@ export function VrLaunchModal({ isOpen, onClose, onEnterWebXr }: VrLaunchModalPr
                 }}
                 className="w-full py-3 rounded-xl bg-gradient-to-r from-aurora-cyan to-aurora-violet text-black font-space font-bold text-sm tracking-wider uppercase shadow-cyan-glow hover:opacity-90 transition-all"
               >
-                Launch Immersive VR Session
+                Launch Immersive 6DoF VR Session
               </button>
             </div>
           ) : (
@@ -85,23 +94,36 @@ export function VrLaunchModal({ isOpen, onClose, onEnterWebXr }: VrLaunchModalPr
                 </p>
               </div>
 
-              {/* QR Code Simulation & URL */}
+              {/* Mobile Cardboard Stereo Button if on mobile */}
+              {onLaunchStereo && (
+                <button
+                  onClick={() => {
+                    onLaunchStereo();
+                    onClose();
+                  }}
+                  className="w-full py-2.5 px-4 rounded-xl bg-aurora-cyan/15 border border-aurora-cyan text-aurora-cyan font-space text-xs font-bold uppercase tracking-wider flex items-center justify-center space-x-2 hover:bg-aurora-cyan/25 transition-colors"
+                >
+                  <Smartphone className="w-4 h-4" />
+                  <span>Launch Mobile Cardboard Stereo View</span>
+                </button>
+              )}
+
+              {/* QR Code & URL */}
               <div className="bg-aurora-void/90 p-4 rounded-xl border border-aurora-border/60 flex flex-col items-center justify-center space-y-3">
-                {/* Visual SVG QR representation */}
-                <div className="w-40 h-40 bg-white p-2.5 rounded-lg flex items-center justify-center shadow-lg">
+                <div className="w-36 h-36 bg-white p-2.5 rounded-lg flex items-center justify-center shadow-lg">
                   <div className="w-full h-full border-4 border-black p-1 flex flex-col justify-between">
                     <div className="flex justify-between">
-                      <div className="w-8 h-8 bg-black rounded-sm" />
-                      <div className="w-4 h-4 bg-black" />
-                      <div className="w-8 h-8 bg-black rounded-sm" />
+                      <div className="w-7 h-7 bg-black rounded-sm" />
+                      <div className="w-3 h-3 bg-black" />
+                      <div className="w-7 h-7 bg-black rounded-sm" />
                     </div>
-                    <div className="text-center text-[9px] font-mono font-bold text-black tracking-tight">
+                    <div className="text-center text-[8px] font-mono font-bold text-black tracking-tight">
                       SCAN IN HEADSET
                     </div>
                     <div className="flex justify-between items-end">
-                      <div className="w-8 h-8 bg-black rounded-sm" />
-                      <div className="w-4 h-4 bg-black" />
-                      <div className="w-8 h-8 bg-black rounded-sm" />
+                      <div className="w-7 h-7 bg-black rounded-sm" />
+                      <div className="w-3 h-3 bg-black" />
+                      <div className="w-7 h-7 bg-black rounded-sm" />
                     </div>
                   </div>
                 </div>
@@ -127,7 +149,7 @@ export function VrLaunchModal({ isOpen, onClose, onEnterWebXr }: VrLaunchModalPr
                 <div className="flex items-start space-x-2">
                   <CheckCircle className="w-4 h-4 text-aurora-violet flex-shrink-0 mt-0.5" />
                   <span>
-                    <strong>Apple Vision Pro:</strong> Open Safari in visionOS, navigate to the link, and tap "Enter VR" to enter spatial mode.
+                    <strong>Apple Vision Pro:</strong> Open Safari in visionOS, navigate to the link, and tap "View in VR" to enter spatial mode.
                   </span>
                 </div>
               </div>
@@ -137,7 +159,7 @@ export function VrLaunchModal({ isOpen, onClose, onEnterWebXr }: VrLaunchModalPr
 
         {/* Footer */}
         <div className="px-6 py-3 border-t border-aurora-border/40 bg-aurora-panel/80 flex justify-between items-center text-xs">
-          <span className="text-aurora-muted">
+          <span className="text-aurora-muted text-[11px]">
             Desktop 3D Orbit Controls are always active in background
           </span>
           <button

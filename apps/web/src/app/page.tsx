@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
+import * as THREE from "three";
 import { Header } from "../components/Header";
 import { RegulatoryBanner } from "../components/RegulatoryBanner";
 import { VoiceMicOrb } from "../components/VoiceMicOrb";
@@ -9,8 +10,10 @@ import { ChatHUD } from "../components/ChatHUD";
 import { DocumentDrawer } from "../components/DocumentDrawer";
 import { CitationInspector } from "../components/CitationInspector";
 import { VrLaunchModal } from "../components/VrLaunchModal";
+import { StereoViewer } from "../components/StereoViewer";
 import { ChatMessage, CitationItem, DocumentRecord } from "../types";
 import { fetchDocuments, queryAssistant, voiceAskAssistant } from "../lib/api";
+import { enterImmersiveVr } from "../lib/webxr";
 
 export default function AuroraDashboard() {
   const [selectedEntity, setSelectedEntity] = useState<string>("default_family");
@@ -21,6 +24,9 @@ export default function AuroraDashboard() {
   const [selectedCitation, setSelectedCitation] = useState<CitationItem | null>(null);
   const [isDocDrawerOpen, setIsDocDrawerOpen] = useState<boolean>(false);
   const [isVrModalOpen, setIsVrModalOpen] = useState<boolean>(false);
+  const [isStereoOpen, setIsStereoOpen] = useState<boolean>(false);
+
+  const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
 
   // Load documents on mount
   const loadDocuments = async () => {
@@ -151,7 +157,11 @@ export default function AuroraDashboard() {
         <section className="lg:col-span-5 flex flex-col space-y-4">
           {/* Always-On 3D Spatial Scene */}
           <div className="h-[320px] sm:h-[380px] w-full">
-            <SpatialScene />
+            <SpatialScene
+              onRendererReady={(renderer) => {
+                rendererRef.current = renderer;
+              }}
+            />
           </div>
 
           {/* 3D Cyber-Tactile Neon Voice Orb */}
@@ -196,14 +206,19 @@ export default function AuroraDashboard() {
         isOpen={isVrModalOpen}
         onClose={() => setIsVrModalOpen(false)}
         onEnterWebXr={() => {
-          // Direct WebXR session request
-          if (typeof window !== "undefined" && "xr" in navigator) {
-            // @ts-ignore
-            navigator.xr?.requestSession("immersive-vr").catch((e: any) => {
-              console.warn("WebXR session request:", e);
+          if (rendererRef.current) {
+            enterImmersiveVr(rendererRef.current).catch((err) => {
+              console.warn("Immersive VR launch failed:", err);
             });
           }
         }}
+        onLaunchStereo={() => setIsStereoOpen(true)}
+      />
+
+      {/* 7. Mobile Cardboard Stereoscopic Viewer */}
+      <StereoViewer
+        isOpen={isStereoOpen}
+        onClose={() => setIsStereoOpen(false)}
       />
     </div>
   );
