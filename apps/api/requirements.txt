@@ -13,3 +13,6 @@ aiosqlite>=0.20.0
 pytest>=8.3.0
 pytest-asyncio>=0.24.0
 pyjwt>=2.9.0
+edge-tts>=7.0.0
+pyttsx3>=2.90
+faster-whisper>=1.0.0

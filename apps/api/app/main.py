@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.db import sqlite
-from app.routers import auth, documents, query
+from app.routers import auth, documents, query, voice
 
 
 @asynccontextmanager
@@ -41,6 +41,7 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(documents.router)
 app.include_router(query.router)
+app.include_router(voice.router)
 
 
 @app.get("/api/health", tags=["Health"])
