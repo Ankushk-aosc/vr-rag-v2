@@ -2,13 +2,13 @@ import hashlib
 import shutil
 import uuid
 from pathlib import Path
-from typing import List
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
+from typing import Any, Dict, List, Optional
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 
 from app.config import settings
 from app.db import sqlite
 from app.schemas.document import DocumentResponse, DocumentUploadResponse
-from app.services import chunker, embeddings, extractor, pinecone_service
+from app.services import auth, chunker, embeddings, extractor, pinecone_service
 
 router = APIRouter(prefix="/api/documents", tags=["Documents"])
 
@@ -26,8 +26,21 @@ ALLOWED_MIME_TYPES = {
 @router.post("/upload", response_model=DocumentUploadResponse, status_code=status.HTTP_201_CREATED)
 async def upload_document(
     file: UploadFile = File(...),
-    family_entity_id: str = Form("default_family")
+    family_entity_id: str = Form("default_family"),
+    allowed_role: str = Form("family_member"),
+    current_user: Optional[Dict[str, Any]] = Depends(auth.get_current_user_optional)
 ):
+    # If user is authenticated, ensure they have upload rights (family_admin)
+    user_id = current_user.get("id") if current_user else "anonymous"
+    if current_user:
+        memberships = current_user.get("memberships", [])
+        user_roles = [m["role"] for m in memberships if m["family_entity_id"] == family_entity_id]
+        if user_roles and "family_admin" not in user_roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only family administrators are authorized to upload financial documents."
+            )
+
     # 1. Validate file extension and MIME type
     file_ext = Path(file.filename).suffix.lower()
     if file_ext not in ALLOWED_MIME_TYPES.values():
@@ -88,19 +101,20 @@ async def upload_document(
             detail=f"Failed to compute local embeddings: {str(e)}"
         )
 
-    # 6. Upsert vectors to Pinecone (Privacy-Safe: only IDs and metadata tags)
+    # 6. Upsert vectors to Pinecone with pre-retrieval role metadata
+    roles_for_pinecone = ["family_admin"] if allowed_role == "family_admin" else ["family_admin", "family_member"]
     total_vectors = 0
     try:
         total_vectors = pinecone_service.upsert_vectors(
             chunks=chunks,
             embeddings=chunk_embeddings,
-            family_entity_id=family_entity_id
+            family_entity_id=family_entity_id,
+            allowed_roles=roles_for_pinecone
         )
-    except Exception as e:
-        # Note: If Pinecone fails (e.g. key missing), record document status for clarity
+    except Exception:
         pass
 
-    # 7. Persist raw text, tables, and document metadata to SQLite
+    # 7. Persist document, ACL, and raw chunks to local SQLite
     doc_record = {
         "id": doc_id,
         "filename": stored_filename,
@@ -113,9 +127,16 @@ async def upload_document(
         "status": "indexed" if total_vectors > 0 else "stored_local_only"
     }
     sqlite.insert_document(doc_record)
+    sqlite.insert_document_acl(document_id=doc_id, family_entity_id=family_entity_id, allowed_role=allowed_role)
     sqlite.insert_chunks(chunks)
 
-    # Re-fetch populated record from DB
+    sqlite.log_audit_event(
+        action="DOCUMENT_UPLOAD",
+        user_id=user_id,
+        resource_id=doc_id,
+        details=f"Uploaded '{file.filename}' to entity '{family_entity_id}' with role '{allowed_role}'"
+    )
+
     persisted_doc = sqlite.get_document_by_id(doc_id)
 
     return DocumentUploadResponse(
@@ -127,14 +148,44 @@ async def upload_document(
 
 
 @router.get("", response_model=List[DocumentResponse])
-async def list_documents():
+async def list_documents(
+    current_user: Optional[Dict[str, Any]] = Depends(auth.get_current_user_optional)
+):
+    if current_user and current_user.get("memberships"):
+        # Aggregate documents across user's active entities and roles
+        all_docs = []
+        seen_ids = set()
+        for m in current_user["memberships"]:
+            docs = sqlite.get_documents_by_entity(m["family_entity_id"], m["role"])
+            for d in docs:
+                if d["id"] not in seen_ids:
+                    seen_ids.add(d["id"])
+                    all_docs.append(DocumentResponse(**d))
+        return all_docs
+
+    # Fallback to general list if anonymous (development convenience)
     docs = sqlite.get_all_documents()
     return [DocumentResponse(**d) for d in docs]
 
 
 @router.get("/{document_id}", response_model=DocumentResponse)
-async def get_document(document_id: str):
+async def get_document(
+    document_id: str,
+    current_user: Optional[Dict[str, Any]] = Depends(auth.get_current_user_optional)
+):
     doc = sqlite.get_document_by_id(document_id)
     if not doc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+
+    # Validate access if user is authenticated
+    if current_user and current_user.get("memberships"):
+        allowed_roles = sqlite.get_document_allowed_roles(document_id, doc["family_entity_id"])
+        user_memberships = {m["family_entity_id"]: m["role"] for m in current_user["memberships"]}
+        user_role_in_entity = user_memberships.get(doc["family_entity_id"])
+
+        if not user_role_in_entity:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied to this family entity.")
+        if user_role_in_entity != "family_admin" and user_role_in_entity not in allowed_roles:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role permissions for this document.")
+
     return DocumentResponse(**doc)

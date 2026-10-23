@@ -8,6 +8,13 @@ def test_sqlite_document_lifecycle(tmp_path, monkeypatch):
 
     sqlite.init_db()
 
+    # Seed test family entity
+    sqlite.create_family_entity({
+        "id": "smith_family_trust",
+        "name": "Smith Family Trust",
+        "entity_type": "Family Trust"
+    })
+
     # 1. Insert test document
     doc_id = "test_doc_ato_01"
     doc_payload = {
