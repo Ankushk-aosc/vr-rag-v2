@@ -1,78 +1,112 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
-  --font-inter: 'Inter', sans-serif;
-  --font-space: 'Space Grotesk', sans-serif;
-  --font-mono: 'JetBrains Mono', monospace;
+  --font-inter: 'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', monospace;
 }
 
 body {
-  background-color: #05050A;
-  color: #F8FAFC;
+  background-color: #000000;
+  color: #F5F5F7;
   font-family: var(--font-inter);
   overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-/* Custom Scrollbars */
+/* Tabular lining figures for banking and currency precision */
+.tabular-numbers, .currency-num {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+/* Minimalist Apple Scrollbar */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
 }
 ::-webkit-scrollbar-track {
-  background: #0A0A16;
+  background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(0, 240, 255, 0.25);
-  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 9999px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 240, 255, 0.5);
+  background: rgba(255, 255, 255, 0.3);
 }
 
-/* Aurora Spatial Glass Cards */
+/* Apple Sovereign Liquid Glass Surfaces */
+.apple-glass {
+  background: rgba(20, 20, 24, 0.72);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.7);
+}
+
+.apple-glass-interactive {
+  background: rgba(22, 22, 26, 0.65);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.apple-glass-interactive:hover {
+  background: rgba(30, 30, 36, 0.85);
+  border-color: rgba(255, 255, 255, 0.16);
+  transform: translateY(-1px);
+}
+
+/* Backward compatibility aliases */
 .aurora-glass {
-  background: rgba(18, 18, 32, 0.75);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border: 1px solid rgba(0, 240, 255, 0.18);
-  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.45);
+  background: rgba(20, 20, 24, 0.75);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.7);
 }
 
 .aurora-glass-interactive {
-  background: rgba(22, 22, 38, 0.65);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  border: 1px solid rgba(0, 240, 255, 0.20);
+  background: rgba(22, 22, 26, 0.65);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .aurora-glass-interactive:hover {
-  border-color: rgba(0, 240, 255, 0.5);
-  box-shadow: 0 0 20px rgba(0, 240, 255, 0.22);
+  background: rgba(30, 30, 36, 0.85);
+  border-color: rgba(255, 255, 255, 0.16);
 }
 
-/* Scanlines and HUD Grid */
-.hud-grid {
-  background-size: 40px 40px;
-  background-image: 
-    linear-gradient(to right, rgba(0, 240, 255, 0.04) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(0, 240, 255, 0.04) 1px, transparent 1px);
-}
-
-/* Neon Pulse Animation */
-@keyframes neon-pulse {
-  0%, 100% {
-    box-shadow: 0 0 15px rgba(0, 240, 255, 0.4), inset 0 0 15px rgba(0, 240, 255, 0.2);
+/* Apple Siri Fluid Multi-Chromatic Wave Ribbon Animation */
+@keyframes siri-fluid-wave {
+  0% {
+    background-position: 0% 50%;
   }
   50% {
-    box-shadow: 0 0 28px rgba(0, 240, 255, 0.7), inset 0 0 22px rgba(0, 240, 255, 0.4);
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
   }
 }
 
-.neon-pulsing {
-  animation: neon-pulse 2.2s infinite ease-in-out;
+.siri-wave-gradient {
+  background: linear-gradient(
+    90deg,
+    #00B4A0,
+    #30D158,
+    #0A84FF,
+    #D4AF37,
+    #00B4A0
+  );
+  background-size: 300% 300%;
+  animation: siri-fluid-wave 4s ease infinite;
 }
