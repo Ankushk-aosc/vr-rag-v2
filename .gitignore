@@ -64,3 +64,7 @@ Thumbs.db
 htmlcov/
 .pytest_cache/
 
+
+# IDE and Agent tooling
+.claude/
+**/.claude/
