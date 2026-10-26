@@ -4,7 +4,7 @@ import React, { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { setupWebXrControllers } from "../lib/webxr";
 import { createDocTexture, DEFAULT_SPATIAL_DOCS } from "./docTextureHelper";
-import { createVoiceParticleOrb } from "./VoiceParticleOrb";
+import Strands from "./Strands";
 import { DocumentRecord } from "../types";
 import { Compass } from "lucide-react";
 
@@ -30,6 +30,7 @@ export function SpatialScene({
   isProcessing = false,
 }: SpatialSceneProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const strandsAnchorRef = useRef<HTMLDivElement | null>(null);
   const isLight = theme === "light";
   const [hasGyro, setHasGyro] = useState<boolean>(false);
   const [canRequestMotion, setCanRequestMotion] = useState<boolean>(false);
@@ -204,11 +205,7 @@ export function SpatialScene({
     overheadLight.position.set(0, 3.5, -1);
     scene.add(overheadLight);
 
-    // 5. Interactive 3D Voice & Resonance Sphere (Positioned in front of cards on podium)
-    const voiceOrb = createVoiceParticleOrb(isLight);
-    scene.add(voiceOrb.group);
-
-    // 6. Interactive Raycasting & Direct 1:1 Orbit Drag Controls
+    // 5. Interactive Raycasting & Direct 1:1 Orbit Drag Controls
     const raycaster = new THREE.Raycaster();
     const mouse = new THREE.Vector2(-1000, -1000);
 
@@ -272,15 +269,6 @@ export function SpatialScene({
         camera.updateMatrixWorld();
         raycaster.setFromCamera(mouse, camera);
 
-        // Click on 3D Voice Sphere
-        const orbIntersects = raycaster.intersectObject(voiceOrb.group, true);
-        if (orbIntersects.length > 0) {
-          if (onVoiceOrbClickRef.current) {
-            onVoiceOrbClickRef.current();
-            return;
-          }
-        }
-
         // Click on Document Slab
         const intersects = raycaster.intersectObjects(slabs, true);
         if (intersects.length > 0) {
@@ -331,13 +319,6 @@ export function SpatialScene({
         mouse.y = -((touch.clientY - rect.top) / container.clientHeight) * 2 + 1;
         camera.updateMatrixWorld();
         raycaster.setFromCamera(mouse, camera);
-
-        // Touch on 3D Voice Sphere
-        const orbIntersects = raycaster.intersectObject(voiceOrb.group, true);
-        if (orbIntersects.length > 0 && onVoiceOrbClickRef.current) {
-          onVoiceOrbClickRef.current();
-          return;
-        }
 
         // Touch on Document Slab
         const intersects = raycaster.intersectObjects(slabs, true);
@@ -418,27 +399,14 @@ export function SpatialScene({
           slab.userData.originalY + Math.sin(time * 0.75 + idx * 1.5) * 0.04;
       });
 
-      // Animate 3D Voice & Resonance Sphere
-      voiceOrb.update(
-        time,
-        isListeningRef.current,
-        audioLevelsRef.current,
-        isProcessingRef.current
-      );
-
       // Raycast hover check (only when not actively dragging)
       if (!isDragging) {
         raycaster.setFromCamera(mouse, camera);
 
-        // Orb Hover Check
-        const orbIntersects = raycaster.intersectObject(voiceOrb.group, true);
-        const isHoveringOrb = orbIntersects.length > 0;
-        voiceOrb.setHovered(isHoveringOrb);
-
         // Slab Hover Check
         const intersects = raycaster.intersectObjects(slabs, true);
         const isOverAnyCard = intersects.length > 0;
-        container.style.cursor = isOverAnyCard || isHoveringOrb ? "pointer" : "grab";
+        container.style.cursor = isOverAnyCard ? "pointer" : "grab";
         slabs.forEach((slab) => {
           const isHovered = intersects.some(
             (hit) => hit.object === slab || hit.object.parent === slab
@@ -446,9 +414,19 @@ export function SpatialScene({
           slab.scale.setScalar(isHovered ? 1.05 : 1.0);
         });
       } else {
-        voiceOrb.setHovered(false);
         container.style.cursor = "grabbing";
         slabs.forEach((slab) => slab.scale.setScalar(1.0));
+      }
+
+      // Track 3D podium anchor for Strands visualizer (centered on podium floor among cards)
+      if (strandsAnchorRef.current && container) {
+        const anchor = new THREE.Vector3(0, 0.45, 0);
+        anchor.project(camera);
+        if (anchor.z < 1.0) {
+          const x = (anchor.x * 0.5 + 0.5) * container.clientWidth;
+          const y = (-anchor.y * 0.5 + 0.5) * container.clientHeight;
+          strandsAnchorRef.current.style.transform = `translate3d(${x}px, ${y}px, 0px) translate(-50%, -50%)`;
+        }
       }
 
       renderer.render(scene, camera);
@@ -466,8 +444,6 @@ export function SpatialScene({
 
     return () => {
       renderer.setAnimationLoop(null);
-      voiceOrb.dispose();
-      scene.remove(voiceOrb.group);
       container.removeEventListener("mousedown", onMouseDown);
       container.removeEventListener("touchstart", onTouchStart);
       window.removeEventListener("mousemove", onMouseMove);
@@ -483,12 +459,67 @@ export function SpatialScene({
     };
   }, [isLight, documents]);
 
+  // Map frequency bands to normalized 0.0-1.0 scalar for Strands shader
+  const micLevel = audioLevels && audioLevels.length > 0
+    ? Math.min(1.0, Math.max(0.0, (audioLevels.reduce((a, b) => a + b, 0) / audioLevels.length - 15) / 75))
+    : 0;
+
+  const isActive = isListening || isProcessing;
+
   return (
     <div className="relative w-full h-full min-h-[500px] overflow-hidden select-none">
       <div
         ref={containerRef}
         className="w-full h-full cursor-grab active:cursor-grabbing touch-none select-none"
       />
+
+      {/* Interactive Strands 3D Podium Visualizer (Positioned on Podium between Cards) */}
+      <div
+        ref={strandsAnchorRef}
+        className={`absolute top-0 left-0 pointer-events-none z-10 transition-opacity duration-500 ease-out ${
+          isActive ? "opacity-100" : "opacity-0"
+        }`}
+        style={{
+          transform: "translate3d(50%, 65%, 0px) translate(-50%, -50%)",
+          willChange: "transform, opacity",
+        }}
+      >
+        <div
+          className={`w-[180px] sm:w-[220px] h-[180px] sm:h-[220px] relative pointer-events-auto cursor-pointer transition-transform duration-500 ease-out ${
+            isActive ? "scale-100" : "scale-75"
+          }`}
+          onClick={() => onVoiceOrbClick?.()}
+          title="Click to interact with Aether Voice Intelligence"
+        >
+          <Strands
+            colors={["#7C3AED", "#8B5CF6", "#A855F7", "#C084FC", "#A855F7", "#8B5CF6", "#7C3AED", "#6D28D9"]}
+            count={3}
+            speed={isActive ? 1.35 : 0.85}
+            amplitude={isActive ? 1.15 : 0.75}
+            waviness={1}
+            energy={isActive ? 0.75 : 0.45}
+            thickness={1.1}
+            spread={1}
+            glow={1.2}
+            taper={1}
+            intensity={1.2}
+            saturation={1}
+            hueShift={0}
+            scale={1}
+            glass={false}
+            glassSize={1}
+            refraction={1}
+            rim={1}
+            dispersion={1}
+            listening={isActive}
+            level={micLevel}
+            interactive={true}
+            clickPulse={true}
+            intro={true}
+            lightMode={false}
+          />
+        </div>
+      </div>
 
       {/* Telemetry Badge with Dynamic Voice Status */}
       <div

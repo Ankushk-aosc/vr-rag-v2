@@ -18,6 +18,7 @@ import {
   Loader2,
 } from "lucide-react";
 import { ChatMessage, CitationItem } from "../types";
+import ThoughtLine from "./ThoughtLine";
 
 interface ChatHUDProps {
   messages: ChatMessage[];
@@ -449,17 +450,32 @@ export function ChatHUD({
           ))
         )}
 
-        {/* Loading Indicator */}
+        {/* ThoughtLine Reasoning Trace while RAG generates answer */}
         {isLoading && (
           <div
-            className={`flex items-center space-x-2.5 text-xs p-3.5 rounded-2xl border max-w-xs backdrop-blur-xl ${
+            className={`p-3.5 rounded-2xl border backdrop-blur-xl transition-all shadow-md ${
               isLight
-                ? "bg-black/5 border-black/10 text-black/70"
-                : "bg-white/5 border-white/10 text-white/70"
+                ? "bg-white/85 border-[#6D28D9]/20 text-[#6D28D9]"
+                : "bg-[#161224]/90 border-[#7C3AED]/30 text-[#C084FC]"
             }`}
           >
-            <Sparkles className="w-4 h-4 text-[#7C3AED] animate-spin flex-shrink-0" />
-            <span>Retrieving vectors & synthesizing evidence in AUD...</span>
+            <ThoughtLine
+              label="Synthesizing Australian Financial Evidence…"
+              doneLabel="Evidence synthesized"
+              color={isLight ? "#6D28D9" : "#C084FC"}
+              glyphColor={isLight ? "#7C3AED" : "#A855F7"}
+              fontSize={13}
+              working={true}
+              steps={[
+                "Querying Pinecone Serverless vector index (3,294 vectors)",
+                "Evaluating ASIC RG 244 & Australian Privacy compliance",
+                "Synthesizing evidence with Groq Cloud (qwen/qwen3.8-27b)",
+                "Generating Australian neural voice stream",
+              ]}
+              collapsible={true}
+              shimmer={true}
+              showTimer={true}
+            />
           </div>
         )}
 
