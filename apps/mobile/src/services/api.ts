@@ -57,7 +57,7 @@ export async function voiceAskAssistant(
   const formData = new FormData();
   
   // Format for React Native fetch upload
-  formData.append("audio_file", {
+  formData.append("file", {
     uri: audioUri,
     type: "audio/m4a",
     name: "voice_query.m4a",

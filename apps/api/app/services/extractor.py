@@ -1,8 +1,5 @@
 from pathlib import Path
 from typing import Any, Dict, List
-import pymupdf as fitz
-import docx
-import openpyxl
 
 
 class ExtractedPage:
@@ -20,6 +17,10 @@ class ExtractedPage:
 
 
 def extract_pdf(file_path: Path) -> List[ExtractedPage]:
+    try:
+        import pymupdf as fitz
+    except ImportError:
+        raise ImportError("PyMuPDF is required to extract PDF files. Please install with 'pip install pymupdf'.")
     doc = fitz.open(str(file_path))
     pages: List[ExtractedPage] = []
     
@@ -52,6 +53,10 @@ def extract_pdf(file_path: Path) -> List[ExtractedPage]:
 
 
 def extract_docx(file_path: Path) -> List[ExtractedPage]:
+    try:
+        import docx
+    except ImportError:
+        raise ImportError("python-docx is required to extract Word files. Please install with 'pip install python-docx'.")
     doc = docx.Document(str(file_path))
     full_text_parts = []
     
@@ -95,6 +100,10 @@ def extract_docx(file_path: Path) -> List[ExtractedPage]:
 
 
 def extract_xlsx(file_path: Path) -> List[ExtractedPage]:
+    try:
+        import openpyxl
+    except ImportError:
+        raise ImportError("openpyxl is required to extract Excel files. Please install with 'pip install openpyxl'.")
     wb = openpyxl.load_workbook(str(file_path), data_only=True)
     pages: List[ExtractedPage] = []
     

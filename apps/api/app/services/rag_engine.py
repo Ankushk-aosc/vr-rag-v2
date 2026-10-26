@@ -90,7 +90,7 @@ async def query_local_ollama(prompt: str) -> str:
 async def generate_llm_response(prompt: str) -> str:
     if settings.LLM_PROVIDER == "groq" and settings.GROQ_API_KEY:
         res = await query_groq_llm(prompt)
-        if not res.startswith("[Groq Request Error"):
+        if not (res.startswith("[Groq Error") or res.startswith("Groq Configuration Notice")):
             return res
         return await query_local_ollama(prompt)
     return await query_local_ollama(prompt)

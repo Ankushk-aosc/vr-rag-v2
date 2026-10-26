@@ -4,7 +4,6 @@ import React, { useEffect, useRef } from "react";
 import * as THREE from "three";
 import { setupWebXrControllers } from "../lib/webxr";
 import { DocumentRecord } from "../types";
-import { createVoiceParticleOrb } from "./VoiceParticleOrb";
 
 interface SpatialSceneProps {
   onRendererReady?: (renderer: THREE.WebGLRenderer) => void;
@@ -82,12 +81,12 @@ export function SpatialScene({
     podium.position.y = -0.12;
     scene.add(podium);
 
-    // Dark Purple Concentric Hairline Ring on Podium
-    const rimGeo = new THREE.RingGeometry(3.55, 3.59, 64);
+    // Clean subtle architectural contour hairline on podium
+    const rimGeo = new THREE.RingGeometry(3.55, 3.58, 64);
     const rimMat = new THREE.MeshBasicMaterial({
-      color: isLight ? 0x6D28D9 : 0x8B5CF6,
+      color: isLight ? 0xCBD5E1 : 0x27272A,
       transparent: true,
-      opacity: isLight ? 0.5 : 0.75,
+      opacity: isLight ? 0.35 : 0.45,
       side: THREE.DoubleSide,
     });
     const rim = new THREE.Mesh(rimGeo, rimMat);
@@ -123,21 +122,21 @@ export function SpatialScene({
         ctx.fillStyle = "#FFFFFF";
         ctx.fillRect(0, 0, 512, 724);
 
-        // Subtle light border
-        ctx.strokeStyle = "rgba(109, 40, 217, 0.25)";
-        ctx.lineWidth = 6;
+        // Crisp subtle light border
+        ctx.strokeStyle = "rgba(0, 0, 0, 0.08)";
+        ctx.lineWidth = 4;
         ctx.strokeRect(12, 12, 488, 700);
       } else {
-        // High-contrast dark mode card surface: rich slate-purple
+        // High-contrast clean dark card surface
         const grad = ctx.createLinearGradient(0, 0, 0, 724);
-        grad.addColorStop(0, "#231F36");
-        grad.addColorStop(1, "#181528");
+        grad.addColorStop(0, "#18181B");
+        grad.addColorStop(1, "#09090B");
         ctx.fillStyle = grad;
         ctx.fillRect(0, 0, 512, 724);
 
-        // Luminous purple border around the entire card
-        ctx.strokeStyle = "rgba(167, 139, 250, 0.65)";
-        ctx.lineWidth = 8;
+        // Luminous subtle border around card
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
+        ctx.lineWidth = 4;
         ctx.strokeRect(12, 12, 488, 700);
       }
 
@@ -147,15 +146,15 @@ export function SpatialScene({
 
       // Document Code / Seal
       ctx.font = "bold 20px monospace";
-      ctx.fillStyle = isLight ? "#6D28D9" : "#C4B5FD";
+      ctx.fillStyle = isLight ? "#0F172A" : "#E2E8F0";
       ctx.fillText(code, 40, 85);
 
       // Format Badge Pill in Top Right
-      ctx.fillStyle = isLight ? "rgba(109, 40, 217, 0.15)" : "rgba(167, 139, 250, 0.25)";
+      ctx.fillStyle = isLight ? "rgba(0, 0, 0, 0.06)" : "rgba(255, 255, 255, 0.10)";
       ctx.beginPath();
       ctx.roundRect(360, 62, 110, 32, 16);
       ctx.fill();
-      ctx.fillStyle = isLight ? "#6D28D9" : "#D4AF37";
+      ctx.fillStyle = isLight ? "#334155" : "#D4AF37";
       ctx.font = "bold 16px monospace";
       ctx.textAlign = "center";
       ctx.fillText(ext, 415, 84);
@@ -327,10 +326,10 @@ export function SpatialScene({
       const slabMat = new THREE.MeshPhysicalMaterial({
         map: texture,
         color: 0xFFFFFF, // Full dynamic range for canvas texture
-        emissive: isLight ? 0x000000 : 0x1A152E,
-        emissiveIntensity: isLight ? 0.0 : 0.65,
-        roughness: 0.15,
-        metalness: 0.05,
+        emissive: isLight ? 0x000000 : 0x0F172A,
+        emissiveIntensity: isLight ? 0.0 : 0.2,
+        roughness: 0.2,
+        metalness: 0.1,
         transparent: true,
         opacity: 0.98,
       });
@@ -340,12 +339,12 @@ export function SpatialScene({
       slab.rotation.y = cfg.rotY;
       slab.userData = { title: cfg.title, originalY: cfg.pos[1], docRecord: cfg.doc };
 
-      // Add a luminous 3D edge wireframe border around each card
+      // Subtle crisp card edge wireframe
       const edgeLineMat = new THREE.LineBasicMaterial({
-        color: isLight ? 0x6D28D9 : 0xA78BFA,
+        color: isLight ? 0x94A3B8 : 0x475569,
         transparent: true,
-        opacity: isLight ? 0.35 : 0.75,
-        linewidth: 2,
+        opacity: isLight ? 0.35 : 0.5,
+        linewidth: 1,
       });
       const wireframeBorder = new THREE.LineSegments(slabEdgesGeometry, edgeLineMat);
       wireframeBorder.raycast = () => {}; // Do not intercept raycasting from slab parent
@@ -372,14 +371,10 @@ export function SpatialScene({
     fillLight.position.set(-4, 3, 2);
     scene.add(fillLight);
 
-    // Atmospheric Dark Purple Overhead Light
-    const overheadLight = new THREE.PointLight(isLight ? 0x6D28D9 : 0x8B5CF6, isLight ? 1.0 : 1.8, 9);
-    overheadLight.position.set(0, 3.2, -1);
+    // Clean architectural overhead studio light
+    const overheadLight = new THREE.PointLight(0xffffff, isLight ? 0.7 : 0.9, 10);
+    overheadLight.position.set(0, 3.5, -1);
     scene.add(overheadLight);
-
-    // 5b. Restored Central Concentric Gyroscopic Rings & Voice Wave Core (0, 1.35, 0)
-    const voiceOrb = createVoiceParticleOrb(isLight);
-    scene.add(voiceOrb.group);
 
     // 6. Interactive Raycasting & Inertial Orbit Controls
     const raycaster = new THREE.Raycaster();
@@ -450,8 +445,6 @@ export function SpatialScene({
     renderer.setAnimationLoop(() => {
       const time = clock.getElapsedTime();
 
-      // Animate voice-reactive 3D particle orb
-      voiceOrb.update(time, isListeningRef.current, audioLevelsRef.current);
 
       // Floating document slabs with gentle breathing
       slabs.forEach((slab, idx) => {
@@ -484,8 +477,6 @@ export function SpatialScene({
 
     return () => {
       renderer.setAnimationLoop(null);
-      voiceOrb.dispose();
-      scene.remove(voiceOrb.group);
       container.removeEventListener("mousedown", onMouseDown);
       container.removeEventListener("click", onClick);
       window.removeEventListener("mousemove", onMouseMove);

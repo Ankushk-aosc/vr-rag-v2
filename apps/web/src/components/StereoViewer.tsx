@@ -4,7 +4,6 @@ import React, { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { X, Smartphone, Compass } from "lucide-react";
 import { DocumentRecord } from "../types";
-import { createVoiceParticleOrb } from "./VoiceParticleOrb";
 
 interface StereoViewerProps {
   isOpen: boolean;
@@ -71,13 +70,9 @@ export function StereoViewer({
     goldLight.position.set(0, 3, 1);
     scene.add(goldLight);
 
-    const purpleLight = new THREE.PointLight(0x8b5cf6, 2.5, 15);
-    purpleLight.position.set(0, 1.8, -2);
-    scene.add(purpleLight);
-
-    // Restored Central Concentric Gyroscopic Rings & Voice Wave Core (0, 1.35, 0)
-    const voiceOrb = createVoiceParticleOrb(false);
-    scene.add(voiceOrb.group);
+    const ambientFillLight = new THREE.PointLight(0xffffff, 1.2, 15);
+    ambientFillLight.position.set(0, 1.8, -2);
+    scene.add(ambientFillLight);
 
     // 2. Texture Generator for Real Financial Document Slabs
     const texturesToDispose: THREE.Texture[] = [];
@@ -373,8 +368,6 @@ export function StereoViewer({
       animId = requestAnimationFrame(renderStereo);
       const time = clock.getElapsedTime();
 
-      // Animate voice-reactive 3D particle orb in VR
-      voiceOrb.update(time, isListeningRef.current, audioLevelsRef.current);
 
       // Gentle floating animation on document slabs
       docMeshes.forEach((mesh, i) => {
@@ -410,8 +403,6 @@ export function StereoViewer({
     // 7. Cleanup
     return () => {
       cancelAnimationFrame(animId);
-      voiceOrb.dispose();
-      scene.remove(voiceOrb.group);
       window.removeEventListener("deviceorientation", handleOrientation);
       window.removeEventListener("mousedown", handlePointerDown);
       window.removeEventListener("mousemove", handlePointerMove);

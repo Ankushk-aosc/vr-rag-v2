@@ -1,3 +1,4 @@
+import asyncio
 import base64
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -40,7 +41,7 @@ async def transcribe_audio(file: UploadFile = File(...)):
 
     file_suffix = Path(file.filename).suffix or ".wav"
     try:
-        transcript = voice.transcribe_audio_bytes(file_bytes, file_suffix=file_suffix)
+        transcript = await asyncio.to_thread(voice.transcribe_audio_bytes, file_bytes, file_suffix)
         return TranscribeResponse(transcript=transcript)
     except Exception as e:
         raise HTTPException(
@@ -86,7 +87,7 @@ async def ask_by_voice(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty audio payload.")
 
     file_suffix = Path(file.filename).suffix or ".wav"
-    transcript = voice.transcribe_audio_bytes(file_bytes, file_suffix=file_suffix)
+    transcript = await asyncio.to_thread(voice.transcribe_audio_bytes, file_bytes, file_suffix)
 
     clean_t = transcript.strip().lower().rstrip(".,!?")
     SILENCE_HALLUCINATIONS = {"you", "thank you", "thanks for watching", "subtitles by", "bye", "[music]", "[applause]"}

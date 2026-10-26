@@ -146,7 +146,11 @@ async def synthesize_speech_edge(text: str, voice: str = DEFAULT_AUSTRALIAN_VOIC
 
 def synthesize_speech_pyttsx3(text: str) -> bytes:
     """Fallback local offline text-to-speech using Windows native SAPI5 speech engine."""
-    import pyttsx3
+    try:
+        import pyttsx3
+    except ImportError:
+        logger.warning("pyttsx3 is not installed. Text-to-speech fallback skipped.")
+        return b""
     clean_text = clean_text_for_speech(text)
     engine = pyttsx3.init()
     
@@ -182,4 +186,8 @@ async def synthesize_speech(text: str) -> bytes:
     except Exception as e:
         logger.warning(f"edge-tts unavailable, falling back to local SAPI5: {e}")
 
-    return synthesize_speech_pyttsx3(text)
+    try:
+        return synthesize_speech_pyttsx3(text)
+    except Exception as e:
+        logger.warning(f"Local pyttsx3 speech synthesis failed: {e}")
+        return b""

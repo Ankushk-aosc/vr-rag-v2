@@ -1,19 +1,19 @@
 import logging
 from typing import Any, Dict, List, Optional
-from pinecone import Pinecone, ServerlessSpec
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-_pinecone_client: Optional[Pinecone] = None
+_pinecone_client: Optional[Any] = None
 
 
-def get_pinecone_client() -> Optional[Pinecone]:
+def get_pinecone_client() -> Optional[Any]:
     global _pinecone_client
     if not settings.PINECONE_API_KEY or settings.PINECONE_API_KEY == "your-pinecone-api-key-here":
         return None
     if _pinecone_client is None:
         try:
+            from pinecone import Pinecone
             _pinecone_client = Pinecone(api_key=settings.PINECONE_API_KEY)
         except Exception as e:
             logger.error(f"Failed to initialize Pinecone client: {e}")
@@ -31,6 +31,7 @@ def ensure_index_exists():
     
     if index_name not in existing_indexes:
         logger.info(f"Creating Pinecone serverless index '{index_name}'...")
+        from pinecone import ServerlessSpec
         pc.create_index(
             name=index_name,
             dimension=settings.EMBEDDING_DIMENSION,
