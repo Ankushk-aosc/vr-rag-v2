@@ -4,7 +4,7 @@
 **Jurisdiction:** Australia (Cth)  
 **Target Currency:** Australian Dollar (AUD, $)  
 **Frontend Architecture:** Option 4 — Aurora Spatial HUD (Next.js 14, Three.js, WebXR)  
-**Backend Architecture:** FastAPI (Python 3.11), Pinecone (Serverless Vector Index), SQLite (Local WAL Mode), Ollama (Local LLM), faster-whisper & edge-tts (Local Speech)
+**Backend Architecture:** FastAPI (Python 3.11), Pinecone (Serverless Vector Index & Metadata), Groq Cloud API (Llama 3.3 / OSS), faster-whisper & edge-tts (Voice)
 
 ---
 
@@ -22,14 +22,13 @@ flowchart TD
     subgraph BACKEND["FastAPI Backend (apps/api - Port 8000)"]
         AUTH["Family Access Control (PBKDF2 + JWT)"]
         INGEST["Document Ingestion (PyMuPDF, python-docx, openpyxl)"]
-        VOICE["Local Speech Pipeline (faster-whisper + edge-tts)"]
+        VOICE["Speech Pipeline (faster-whisper + edge-tts)"]
         RAG["Evidence-Grounded RAG Engine (Prompt-Injection Defense)"]
     end
 
-    subgraph STORAGE["Storage Layer"]
-        PINE["Pinecone Serverless Cloud (Anonymized Vectors + ACL Tags)"]
-        SQL["Local SQLite (data/app.db: Raw Text, Passwords, Audit Trail)"]
-        LOCAL_LLM["Local Ollama (llama3.2 on localhost:11434)"]
+    subgraph STORAGE["Cloud Services Layer"]
+        PINE["Pinecone Serverless Cloud (Vectors + Text Metadata + Document Registry)"]
+        GROQ_LLM["Groq Cloud API (Ultra-low latency LLM inference)"]
     end
 
     WEB --> BACKEND
@@ -38,8 +37,7 @@ flowchart TD
     CARDBOARD --> BACKEND
 
     BACKEND --> PINE
-    BACKEND --> SQL
-    BACKEND --> LOCAL_LLM
+    BACKEND --> GROQ_LLM
 ```
 
 ---
@@ -49,7 +47,7 @@ flowchart TD
 1. **Python:** 3.11+ (Python 3.11.9 verified on host).
 2. **Node.js:** v18+ (v24.20.0 with npm 11.19.0 verified on host).
 3. **Pinecone Account:** Free API key from [pinecone.io](https://www.pinecone.io).
-4. **Ollama:** Open-weights local LLM runtime (`ollama serve`).
+4. **Groq Cloud Account:** API key from [console.groq.com](https://console.groq.com).
 
 ---
 

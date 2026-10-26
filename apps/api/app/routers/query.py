@@ -1,6 +1,5 @@
 from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
-from app.db import sqlite
 from app.schemas.query import QueryRequest, QueryResponse
 from app.services import auth, rag_engine
 
@@ -37,13 +36,6 @@ async def ask_question(
             top_k=request.top_k
         )
 
-        # Redacted audit logging (log question length & citations count, NOT confidential numbers)
-        sqlite.log_audit_event(
-            action="RAG_QUERY",
-            user_id=user_id,
-            resource_id=request.family_entity_id,
-            details=f"Query executed. Citations retrieved: {len(result.get('citations', []))}"
-        )
 
         return QueryResponse(**result)
     except HTTPException:

@@ -152,6 +152,13 @@ export function VoiceMicOrb({
 
   const stopRecording = () => {
     if (mediaRecorderRef.current && isRecording) {
+      try {
+        if (mediaRecorderRef.current.state === "recording") {
+          mediaRecorderRef.current.requestData();
+        }
+      } catch (e) {
+        console.warn("MediaRecorder requestData flush:", e);
+      }
       mediaRecorderRef.current.stop();
       setIsRecording(false);
     }

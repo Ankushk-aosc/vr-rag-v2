@@ -1,8 +1,6 @@
 from typing import Any, Dict, List, Optional
-import httpx
 from app.config import settings
 from app.services import embeddings, pinecone_service
-from app.db import sqlite
 
 
 SYSTEM_PROMPT = """You are an Australian Financial Family Knowledge Assistant operating under strict Australian Privacy Principles (APPs).
@@ -22,9 +20,10 @@ _groq_client = None
 
 def get_groq_client():
     global _groq_client
-    if _groq_client is None and settings.GROQ_API_KEY:
+    if settings.GROQ_API_KEY:
         from groq import AsyncGroq
-        _groq_client = AsyncGroq(api_key=settings.GROQ_API_KEY)
+        if _groq_client is None or getattr(_groq_client, "api_key", None) != settings.GROQ_API_KEY:
+            _groq_client = AsyncGroq(api_key=settings.GROQ_API_KEY)
     return _groq_client
 
 
@@ -40,14 +39,18 @@ async def query_groq_llm(user_content: str) -> str:
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_content}
             ],
-            temperature=1,
+            temperature=0.3,
             max_completion_tokens=2048,
             top_p=1,
             reasoning_effort="medium",
             stream=False,
             stop=None
         )
-        return completion.choices[0].message.content or ""
+        msg = completion.choices[0].message
+        ans = msg.content or ""
+        if not ans.strip() and hasattr(msg, "reasoning") and msg.reasoning:
+            ans = msg.reasoning
+        return ans
     except Exception as e:
         err_str = str(e)
         if "model_permission_blocked_org" in err_str:
@@ -58,42 +61,12 @@ async def query_groq_llm(user_content: str) -> str:
         return f"[Groq Error: {err_str}]"
 
 
-async def query_local_ollama(prompt: str) -> str:
-    url = f"{settings.OLLAMA_BASE_URL}/api/generate"
-    payload = {
-        "model": settings.OLLAMA_MODEL,
-        "prompt": prompt,
-        "stream": False,
-        "options": {
-            "temperature": 0.1,  # Low temperature for deterministic, factual grounding
-            "top_p": 0.9
-        }
-    }
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.post(url, json=payload)
-            if resp.status_code == 200:
-                data = resp.json()
-                return data.get("response", "").strip()
-            else:
-                return f"[LLM Error: Ollama returned status {resp.status_code}]"
-    except httpx.ConnectError:
-        return (
-            "Unable to generate response: Local Ollama service is not reachable. "
-            "Please ensure Ollama is running (`ollama serve`). "
-            "Retrieved document citations are displayed below."
-        )
-    except Exception as e:
-        return f"[Error connecting to local LLM: {str(e)}]"
-
-
 async def generate_llm_response(prompt: str) -> str:
-    if settings.LLM_PROVIDER == "groq" and settings.GROQ_API_KEY:
-        res = await query_groq_llm(prompt)
-        if not (res.startswith("[Groq Error") or res.startswith("Groq Configuration Notice")):
-            return res
-        return await query_local_ollama(prompt)
-    return await query_local_ollama(prompt)
+    """
+    Direct Groq Cloud LLM Synthesis.
+    Strictly queries Groq with zero fallback to local processes.
+    """
+    return await query_groq_llm(prompt)
 
 
 async def execute_rag_query(
@@ -130,37 +103,40 @@ async def execute_rag_query(
             "grounded": False
         }
         
-    # 3. Hydrate raw chunk text from local SQLite (Privacy-Safe Pattern)
-    chunk_ids = [m["chunk_id"] for m in matches]
-    chunks_data = sqlite.get_chunks_by_ids(chunk_ids)
-    
-    if not chunks_data:
-        return {
-            "answer": "Unable to verify from authorized documents. Referenced document records are no longer present in local storage.",
-            "citations": [],
-            "grounded": False
-        }
-        
-    # 4. Construct prompt with explicit untrusted evidence boundaries
+    # 3. Extract verified evidence directly from Pinecone cloud metadata
     evidence_blocks = []
     citations = []
     
-    for c in chunks_data:
+    for m in matches:
+        meta = m.get("metadata", {})
+        content = m.get("text") or meta.get("text", "")
+        if not content:
+            continue
+        doc_name = meta.get("original_name") or meta.get("filename") or "Authorized Financial Record"
+        page_num = meta.get("page_number", 1)
+        
         citations.append({
-            "chunk_id": c["id"],
-            "document_id": c["document_id"],
-            "document_name": c.get("document_name", "Unknown Document"),
-            "page_number": c["page_number"],
-            "section_title": c.get("section_title"),
-            "is_table": bool(c.get("is_table")),
-            "snippet": c["content"][:200] + "..." if len(c["content"]) > 200 else c["content"]
+            "chunk_id": m["chunk_id"],
+            "document_id": meta.get("document_id", ""),
+            "document_name": doc_name,
+            "page_number": page_num,
+            "section_title": meta.get("section_title"),
+            "is_table": bool(meta.get("is_table", False)),
+            "snippet": content[:200] + "..." if len(content) > 200 else content
         })
         
         evidence_blocks.append(
-            f"<evidence source='{c.get('document_name')}' page='{c['page_number']}'>\n"
-            f"{c['content']}\n"
+            f"<evidence source='{doc_name}' page='{page_num}'>\n"
+            f"{content}\n"
             f"</evidence>"
         )
+        
+    if not evidence_blocks:
+        return {
+            "answer": "Unable to verify from authorized documents. No matching evidence could be retrieved from cloud vector metadata.",
+            "citations": [],
+            "grounded": False
+        }
         
     combined_evidence = "\n\n".join(evidence_blocks)
     prompt = (
@@ -171,7 +147,7 @@ async def execute_rag_query(
         f"FACTUAL ANSWER (in AUD where applicable, with precise citations):"
     )
     
-    # 5. Synthesize answer with configured LLM (Groq or Ollama)
+    # 4. Synthesize answer with Groq Cloud LLM
     answer = await generate_llm_response(prompt)
     
     return {

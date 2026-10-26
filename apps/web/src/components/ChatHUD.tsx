@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useRef, useState, useEffect } from "react";
+import React, { useRef, useState, useEffect, useCallback } from "react";
 import {
   Send,
   Volume2,
@@ -13,6 +13,9 @@ import {
   Minus,
   Maximize2,
   Trash2,
+  Mic,
+  Square,
+  Loader2,
 } from "lucide-react";
 import { ChatMessage, CitationItem } from "../types";
 
@@ -26,6 +29,7 @@ interface ChatHUDProps {
   onClose: () => void;
   onClearMessages?: () => void;
   theme?: "dark" | "light";
+  onAudioCaptured?: (audioBlob: Blob) => void;
 }
 
 export function ChatHUD({
@@ -38,10 +42,20 @@ export function ChatHUD({
   onClose,
   onClearMessages,
   theme = "dark",
+  onAudioCaptured,
 }: ChatHUDProps) {
   const [inputText, setInputText] = useState("");
   const [isMinimized, setIsMinimized] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const streamRef = useRef<MediaStream | null>(null);
+  const timerIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const speechRecognitionRef = useRef<any>(null);
+  const accumulatedTranscriptRef = useRef<string>("");
 
   const isLight = theme === "light";
 
@@ -54,6 +68,174 @@ export function ChatHUD({
       scrollToBottom();
     }
   }, [messages, isLoading, isOpen, isMinimized]);
+
+  // Clean up audio safely
+  const cleanupAudio = useCallback(() => {
+    if (speechRecognitionRef.current) {
+      try {
+        speechRecognitionRef.current.abort();
+      } catch {}
+      speechRecognitionRef.current = null;
+    }
+    if (timerIntervalRef.current) {
+      clearInterval(timerIntervalRef.current);
+      timerIntervalRef.current = null;
+    }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    }
+    setIsRecording(false);
+    setRecordingSeconds(0);
+  }, []);
+
+  const cleanupRef = useRef(cleanupAudio);
+  useEffect(() => {
+    cleanupRef.current = cleanupAudio;
+  });
+
+  useEffect(() => {
+    return () => {
+      cleanupRef.current();
+    };
+  }, []);
+
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+
+      let selectedMime = "audio/webm";
+      if (typeof MediaRecorder !== "undefined" && typeof MediaRecorder.isTypeSupported === "function") {
+        if (MediaRecorder.isTypeSupported("audio/webm;codecs=opus")) {
+          selectedMime = "audio/webm;codecs=opus";
+        } else if (MediaRecorder.isTypeSupported("audio/webm")) {
+          selectedMime = "audio/webm";
+        } else if (MediaRecorder.isTypeSupported("audio/mp4")) {
+          selectedMime = "audio/mp4";
+        } else if (MediaRecorder.isTypeSupported("audio/ogg")) {
+          selectedMime = "audio/ogg";
+        } else {
+          selectedMime = "";
+        }
+      }
+
+      const options = selectedMime ? { mimeType: selectedMime } : undefined;
+      const mediaRecorder = new MediaRecorder(stream, options);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) audioChunksRef.current.push(event.data);
+      };
+
+      mediaRecorder.onstop = () => {
+        const audioBlob = new Blob(audioChunksRef.current, {
+          type: selectedMime || "audio/webm",
+        });
+        const recognizedText = (accumulatedTranscriptRef.current || inputText).trim();
+
+        if (recognizedText) {
+          onSendMessage(recognizedText);
+          setInputText("");
+        } else if (audioBlob.size >= 500 && onAudioCaptured) {
+          onAudioCaptured(audioBlob);
+        }
+
+        cleanupAudio();
+      };
+
+      mediaRecorder.start(200);
+      setIsRecording(true);
+      setRecordingSeconds(0);
+
+      if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
+      timerIntervalRef.current = setInterval(() => {
+        setRecordingSeconds((prev) => prev + 1);
+      }, 1000);
+
+      // Web Speech API for real-time transcription
+      accumulatedTranscriptRef.current = "";
+      const SpeechRecognitionClass =
+        typeof window !== "undefined"
+          ? (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+          : null;
+
+      if (SpeechRecognitionClass) {
+        try {
+          const recognition = new SpeechRecognitionClass();
+          speechRecognitionRef.current = recognition;
+          recognition.continuous = true;
+          recognition.interimResults = true;
+          recognition.lang = "en-AU";
+
+          recognition.onresult = (event: any) => {
+            let currentInterim = "";
+            let currentFinal = "";
+            for (let i = event.resultIndex; i < event.results.length; ++i) {
+              const transcriptPart = event.results[i][0].transcript;
+              if (event.results[i].isFinal) {
+                currentFinal += transcriptPart;
+              } else {
+                currentInterim += transcriptPart;
+              }
+            }
+            if (currentFinal) {
+              accumulatedTranscriptRef.current =
+                (accumulatedTranscriptRef.current ? accumulatedTranscriptRef.current + " " : "") + currentFinal.trim();
+            }
+            const liveDisplay = (
+              accumulatedTranscriptRef.current + (currentInterim ? " " + currentInterim : "")
+            ).trim();
+            if (liveDisplay) {
+              setInputText(liveDisplay);
+            }
+          };
+
+          recognition.onerror = (e: any) => {
+            console.warn("SpeechRecognition notice:", e.error);
+          };
+
+          recognition.start();
+        } catch (e) {
+          console.warn("SpeechRecognition fallback in dialogue:", e);
+        }
+      }
+    } catch (err) {
+      console.error("Microphone access error:", err);
+      alert("Microphone permission denied or unsupported.");
+      cleanupAudio();
+    }
+  };
+
+  const stopRecording = () => {
+    if (speechRecognitionRef.current) {
+      try {
+        speechRecognitionRef.current.stop();
+      } catch {}
+      speechRecognitionRef.current = null;
+    }
+
+    if (mediaRecorderRef.current && isRecording) {
+      try {
+        if (mediaRecorderRef.current.state === "recording") {
+          mediaRecorderRef.current.requestData();
+        }
+      } catch (e) {
+        console.warn("MediaRecorder requestData flush:", e);
+      }
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+    }
+  };
+
+  const toggleRecording = () => {
+    if (isRecording) {
+      stopRecording();
+    } else {
+      startRecording();
+    }
+  };
 
   if (!isOpen) return null;
 
@@ -284,7 +466,7 @@ export function ChatHUD({
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Internal Mini-Input */}
+      {/* Internal Mini-Input with Voice Microphone Option */}
       <form
         onSubmit={handleSubmit}
         className={`p-3 border-t backdrop-blur-2xl ${
@@ -292,27 +474,77 @@ export function ChatHUD({
         }`}
       >
         <div
-          className={`flex items-center space-x-2 border rounded-xl px-3 py-1.5 ${
-            isLight ? "bg-black/5 border-black/10" : "bg-white/5 border-white/10"
+          className={`flex items-center space-x-2 border rounded-xl px-2.5 py-1.5 transition-all ${
+            isRecording
+              ? isLight
+                ? "bg-red-50/80 border-red-400/60 ring-1 ring-red-400/30"
+                : "bg-red-950/25 border-red-500/60 ring-1 ring-red-500/30"
+              : isLight
+              ? "bg-black/5 border-black/10"
+              : "bg-white/5 border-white/10"
           }`}
         >
+          {/* Mic Button */}
+          <button
+            type="button"
+            onClick={toggleRecording}
+            disabled={isLoading}
+            aria-label={isRecording ? "Stop voice recording" : "Speak follow-up query"}
+            className={`w-7 h-7 rounded-lg flex items-center justify-center transition-all flex-shrink-0 ${
+              isRecording
+                ? "bg-red-500 text-white animate-pulse shadow-md"
+                : isLight
+                ? "bg-[#6D28D9]/10 hover:bg-[#6D28D9]/20 text-[#6D28D9]"
+                : "bg-white/10 hover:bg-white/20 text-[#A78BFA]"
+            }`}
+          >
+            {isRecording ? (
+              <Square className="w-3.5 h-3.5 fill-current" />
+            ) : (
+              <Mic className="w-3.5 h-3.5" />
+            )}
+          </button>
+
+          {/* Active Recording Timer Badge */}
+          {isRecording && (
+            <span className="text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded bg-red-500/15 text-red-500 border border-red-500/30 flex-shrink-0">
+              {Math.floor(recordingSeconds / 60)}:{(recordingSeconds % 60).toString().padStart(2, "0")}
+            </span>
+          )}
+
           <input
             type="text"
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
             disabled={isLoading}
-            placeholder="Type follow-up query..."
+            placeholder={
+              isRecording
+                ? "Listening... Speak your query"
+                : "Type or speak follow-up query..."
+            }
             className={`flex-1 bg-transparent text-xs focus:outline-none ${
               isLight ? "text-black placeholder-black/40" : "text-white placeholder-white/40"
             }`}
           />
-          <button
-            type="submit"
-            disabled={isLoading || !inputText.trim()}
-            className="w-7 h-7 rounded-lg bg-[#7C3AED] text-white disabled:opacity-30 flex items-center justify-center hover:bg-[#6D28D9] transition-all flex-shrink-0 shadow"
-          >
-            <Send className="w-3.5 h-3.5" />
-          </button>
+
+          {isRecording ? (
+            <button
+              type="button"
+              onClick={stopRecording}
+              className="px-2 py-1 rounded-md bg-red-500/20 hover:bg-red-500/30 text-red-500 text-[11px] font-semibold tracking-tight transition-all flex-shrink-0 border border-red-500/40"
+            >
+              Done
+            </button>
+          ) : (
+            <button
+              type="submit"
+              disabled={isLoading || !inputText.trim()}
+              aria-label="Send message"
+              className="w-7 h-7 rounded-lg bg-[#7C3AED] text-white disabled:opacity-30 flex items-center justify-center hover:bg-[#6D28D9] transition-all flex-shrink-0 shadow"
+            >
+              <Send className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
       </form>
     </aside>

@@ -2,14 +2,11 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
-from app.db import sqlite
 from app.routers import auth, documents, query, voice
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Initialize SQLite tables on startup
-    sqlite.init_db()
     yield
 
 
@@ -17,9 +14,9 @@ app = FastAPI(
     title="Aether Sovereign Financial RAG API (Australia)",
     description=(
         "Privacy-preserving, voice-first financial RAG assistant for Australian family offices. "
-        "Integrates Pinecone vector indexing with zero-leakage local SQLite text storage."
+        "Cloud-native architecture powered by Pinecone serverless vector & metadata storage and Groq cloud inference."
     ),
-    version="1.0.0",
+    version="2.0.0",
     lifespan=lifespan
 )
 
@@ -54,6 +51,10 @@ async def health_check():
         "environment": settings.ENVIRONMENT,
         "jurisdiction": "Australia (Cth)",
         "currency": settings.DEFAULT_CURRENCY,
+        "storage_provider": "Pinecone Cloud Serverless (Zero Local Storage)",
+        "pinecone_index": settings.PINECONE_INDEX_NAME,
         "pinecone_configured": bool(settings.PINECONE_API_KEY and settings.PINECONE_API_KEY != "your-pinecone-api-key-here"),
-        "sqlite_database": settings.SQLITE_DB_PATH
+        "llm_provider": "Groq Cloud API (Zero Fallback)",
+        "groq_model": settings.GROQ_MODEL
     }
+

@@ -15,9 +15,6 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = "development"
     APP_SECRET_KEY: str = "dev-insecure-key-change-in-production"
 
-    # SQLite Storage
-    SQLITE_DB_PATH: str = str(Path(__file__).resolve().parents[3] / "data" / "app.db")
-    UPLOADS_DIR: str = str(Path(__file__).resolve().parents[3] / "data" / "uploads")
 
     # Pinecone
     PINECONE_API_KEY: Optional[str] = None
@@ -25,20 +22,18 @@ class Settings(BaseSettings):
     PINECONE_CLOUD: str = "aws"
     PINECONE_REGION: str = "us-east-1"
 
-    # Local Embeddings & LLM
+    # Embeddings
     EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"
     EMBEDDING_DIMENSION: int = 384
-    OLLAMA_BASE_URL: str = "http://localhost:11434"
-    OLLAMA_MODEL: str = "llama3.2"
 
     # Currency and Regulatory Defaults
     DEFAULT_CURRENCY: str = "AUD"
     FINANCIAL_YEAR_BOUNDARY_MONTH: int = 7  # July 1
 
-    # Groq Cloud LLM
+    # Groq Cloud LLM (Strict Cloud Provider, Zero Fallback)
     GROQ_API_KEY: Optional[str] = None
-    GROQ_MODEL: str = "openai/gpt-oss-120b"
-    LLM_PROVIDER: str = "groq"  # "groq" or "ollama"
+    GROQ_MODEL: str = "qwen/qwen3.8-27b"
+    LLM_PROVIDER: str = "groq"
 
     # Local Whisper Speech-to-Text & Voice
     WHISPER_MODEL_SIZE: str = "base.en"

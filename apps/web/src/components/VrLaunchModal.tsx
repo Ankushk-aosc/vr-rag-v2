@@ -17,7 +17,7 @@ export function VrLaunchModal({
   onClose,
   onEnterWebXr,
   onLaunchStereo,
-  theme = "dark",
+  theme = "light",
 }: VrLaunchModalProps) {
   const [webxrSupported, setWebxrSupported] = useState<boolean>(false);
   const [sessionUrl, setSessionUrl] = useState<string>("");

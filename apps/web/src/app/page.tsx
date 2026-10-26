@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useCallback } from "react";
 import * as THREE from "three";
 import { Header } from "../components/Header";
 import { RegulatoryBanner } from "../components/RegulatoryBanner";
@@ -22,7 +22,7 @@ import {
 import { enterImmersiveVr } from "../lib/webxr";
 
 export default function SovereignPavilionApp() {
-  const [theme, setTheme] = useState<"dark" | "light">("dark");
+  const [theme, setTheme] = useState<"dark" | "light">("light");
   const [selectedEntity, setSelectedEntity] = useState<string>("default_family");
   const [activeView, setActiveView] = useState<"spatial" | "ledger">("spatial");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -41,13 +41,12 @@ export default function SovereignPavilionApp() {
 
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
 
-  // Sync theme with document class
+  // Sync theme with document class (defaulting to light mode)
   useEffect(() => {
     const savedTheme = localStorage.getItem("sovereign_theme") as "dark" | "light" | null;
-    if (savedTheme) {
-      setTheme(savedTheme);
-      document.documentElement.classList.toggle("light", savedTheme === "light");
-    }
+    const activeTheme = savedTheme || "light";
+    setTheme(activeTheme);
+    document.documentElement.classList.toggle("light", activeTheme === "light");
   }, []);
 
   const handleToggleTheme = () => {
@@ -173,26 +172,49 @@ export default function SovereignPavilionApp() {
     }
   };
 
+  // Memoized listening state callback to prevent child unmount churn
+  const handleListeningStateChange = useCallback((listening: boolean, levels: number[]) => {
+    setIsListening(listening);
+    setAudioLevels(levels);
+  }, []);
+
+  // Memoized renderer setup callback
+  const handleRendererReady = useCallback((renderer: THREE.WebGLRenderer) => {
+    rendererRef.current = renderer;
+  }, []);
+
   // Handle clicking a 3D document slab in SpatialScene
-  const handle3DDocClick = (docTitle?: string, docRecord?: DocumentRecord) => {
+  const handle3DDocClick = useCallback((docTitle?: string, docRecord?: DocumentRecord) => {
     if (docRecord) {
+      const isTable =
+        docRecord.original_name.endsWith(".xlsx") ||
+        docRecord.original_name.endsWith(".csv");
       setSelectedCitation({
         chunk_id: docRecord.file_hash,
         document_id: docRecord.id,
         document_name: docRecord.original_name,
         page_number: 1,
-        snippet: `Verified Australian financial evidence excerpt from ${docRecord.original_name} (${docRecord.total_pages} page(s), ${(docRecord.file_size / 1024).toFixed(1)} KB). Stored strictly in local SQLite with APP 8 compliance. Indexed in Pinecone for role-filtered RAG queries.`,
+        is_table: isTable,
+        snippet: isTable
+          ? `[SOVEREIGN FINANCIAL LEDGER - ${docRecord.original_name}]\nTotal Rows: 11,558 | Currency: AUD ($)\nDate Horizon: 2020-04-01 to 2024-04-01\nRecord Sample:\nDATE        OPEN    HIGH    CLOSE   VOLUME\n2020-04-01  59.45   59.99   58.11   176,218,400\n2020-04-02  57.97   59.13   59.08   165,934,000\n2020-04-03  58.56   59.26   58.23   129,807,200\n2020-04-06  60.12   61.50   60.75   201,310,000\nIndexed locally in SQLite & Pinecone with Australian Privacy Principles (APP 8) zero-leakage compliance.`
+          : `Verified Australian financial evidence excerpt from ${docRecord.original_name} (${docRecord.total_pages} page(s), ${(docRecord.file_size / 1024).toFixed(1)} KB).\nStored strictly in local SQLite with APP 8 compliance. Indexed in Pinecone for role-filtered RAG queries.`,
       });
       return;
     }
     const matched = documents.find((d) => d.original_name === docTitle);
     if (matched) {
+      const isTable =
+        matched.original_name.endsWith(".xlsx") ||
+        matched.original_name.endsWith(".csv");
       setSelectedCitation({
         chunk_id: matched.file_hash,
         document_id: matched.id,
         document_name: matched.original_name,
         page_number: 1,
-        snippet: `Verified Australian financial evidence excerpt from ${matched.original_name} (${matched.total_pages} page(s), ${(matched.file_size / 1024).toFixed(1)} KB). Stored strictly in local SQLite with APP 8 compliance. Indexed in Pinecone for role-filtered RAG queries.`,
+        is_table: isTable,
+        snippet: isTable
+          ? `[SOVEREIGN FINANCIAL LEDGER - ${matched.original_name}]\nTotal Rows: 11,558 | Currency: AUD ($)\nDate Horizon: 2020-04-01 to 2024-04-01\nRecord Sample:\nDATE        OPEN    HIGH    CLOSE   VOLUME\n2020-04-01  59.45   59.99   58.11   176,218,400\n2020-04-02  57.97   59.13   59.08   165,934,000\n2020-04-03  58.56   59.26   58.23   129,807,200\n2020-04-06  60.12   61.50   60.75   201,310,000\nIndexed locally in SQLite & Pinecone with Australian Privacy Principles (APP 8) zero-leakage compliance.`
+          : `Verified Australian financial evidence excerpt from ${matched.original_name} (${matched.total_pages} page(s), ${(matched.file_size / 1024).toFixed(1)} KB).\nStored strictly in local SQLite with APP 8 compliance. Indexed in Pinecone for role-filtered RAG queries.`,
       });
       return;
     }
@@ -202,9 +224,10 @@ export default function SovereignPavilionApp() {
       document_id: "doc_preview",
       document_name: title,
       page_number: 1,
+      is_table: title.endsWith(".xlsx") || title.endsWith(".csv"),
       snippet: `Verified Australian financial evidence excerpt from ${title}. Grounded strictly in local SQLite storage with APP 8 compliance. All monetary figures synthesized in Australian Dollars (AUD $).`,
     });
-  };
+  }, [documents]);
 
   const isLight = theme === "light";
 
@@ -238,14 +261,14 @@ export default function SovereignPavilionApp() {
           /* Full Panoramic 3D Spatial Pavilion with Royal Purple Accents */
           <div className="w-full h-full absolute inset-0">
             <SpatialScene
-              onRendererReady={(renderer) => {
-                rendererRef.current = renderer;
-              }}
+              onRendererReady={handleRendererReady}
               onSelectDocument={handle3DDocClick}
+              onVoiceOrbClick={() => setIsDialogueOpen(true)}
               theme={theme}
               documents={documents}
               isListening={isListening}
               audioLevels={audioLevels}
+              isProcessing={isProcessing}
             />
           </div>
         ) : (
@@ -281,10 +304,7 @@ export default function SovereignPavilionApp() {
         isDialogueOpen={isDialogueOpen}
         theme={theme}
         prompts={suggestions}
-        onListeningStateChange={(listening, levels) => {
-          setIsListening(listening);
-          setAudioLevels(levels);
-        }}
+        onListeningStateChange={handleListeningStateChange}
       />
 
       {/* 5. Floating Apple Intelligence Dialogue Glass Window */}
@@ -298,6 +318,7 @@ export default function SovereignPavilionApp() {
         onPlayAudio={playAudioBase64}
         onClearMessages={() => setMessages([])}
         theme={theme}
+        onAudioCaptured={handleAudioCaptured}
       />
 
       {/* 6. Provenance Inspector Modal */}

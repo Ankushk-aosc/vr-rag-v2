@@ -4,6 +4,8 @@ import React, { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { X, Smartphone, Compass } from "lucide-react";
 import { DocumentRecord } from "../types";
+import { createVoiceParticleOrb } from "./VoiceParticleOrb";
+import { DEFAULT_SPATIAL_DOCS } from "./docTextureHelper";
 
 interface StereoViewerProps {
   isOpen: boolean;
@@ -213,68 +215,7 @@ export function StereoViewer({
     const activeDocs: (DocumentRecord | null)[] =
       documents && documents.length > 0
         ? documents.slice(0, 5)
-        : [
-            {
-              id: "doc-1",
-              filename: "AAPL_financial_data_11558_rows.xlsx",
-              original_name: "AAPL_financial_data_11558_rows.xlsx",
-              mime_type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-              file_size: 539573,
-              file_hash: "8fb6ff6fa8ca912b73bc3666b6c2c62c",
-              total_pages: 1,
-              family_entity_id: "default_family",
-              status: "indexed",
-              uploaded_at: "",
-            },
-            {
-              id: "doc-2",
-              filename: "AAPL_financial_data_11558_rows.pdf",
-              original_name: "AAPL_financial_data_11558_rows.pdf",
-              mime_type: "application/pdf",
-              file_size: 940280,
-              file_hash: "cf9d93ed806e478fb18bc298d871be84",
-              total_pages: 233,
-              family_entity_id: "default_family",
-              status: "indexed",
-              uploaded_at: "",
-            },
-            {
-              id: "doc-3",
-              filename: "AAPL_financial_data_11558_rows.csv",
-              original_name: "AAPL_financial_data_11558_rows.csv",
-              mime_type: "text/csv",
-              file_size: 710536,
-              file_hash: "d2be779e1f104f279c13e51240a1b6ca",
-              total_pages: 232,
-              family_entity_id: "default_family",
-              status: "indexed",
-              uploaded_at: "",
-            },
-            {
-              id: "doc-4",
-              filename: "AAPL_financial_data_11558_rows.docx",
-              original_name: "AAPL_financial_data_11558_rows.docx",
-              mime_type: "application/docx",
-              file_size: 346220,
-              file_hash: "af7556c576aba4749f1b21396a84cbb0",
-              total_pages: 1,
-              family_entity_id: "default_family",
-              status: "indexed",
-              uploaded_at: "",
-            },
-            {
-              id: "doc-5",
-              filename: "AAPL_financial_data_11558_rows.txt",
-              original_name: "AAPL_financial_data_11558_rows.txt",
-              mime_type: "text/plain",
-              file_size: 719771,
-              file_hash: "d09437ff9af64f5095ce56a4297c55b7",
-              total_pages: 1,
-              family_entity_id: "default_family",
-              status: "indexed",
-              uploaded_at: "",
-            },
-          ];
+        : DEFAULT_SPATIAL_DOCS;
 
     // 4. Construct Floating Document Slabs along an arc
     const count = activeDocs.length;
@@ -306,79 +247,128 @@ export function StereoViewer({
       const mesh = new THREE.Mesh(slabGeo, materials);
       mesh.position.set(x, y, z);
       mesh.rotation.y = -theta;
+      mesh.userData = { initialY: y };
       scene.add(mesh);
       docMeshes.push(mesh);
     });
 
-    // 5. Controls: Gyroscope with Mouse/Touch Orbit Fallback
-    let alpha = 0, beta = 0, gamma = 0;
+    // 4.5. Floating 3D Voice Sphere in Stereoscopic Room
+    const voiceOrb = createVoiceParticleOrb(false);
+    voiceOrb.group.position.set(0, 1.35, -0.6);
+    scene.add(voiceOrb.group);
+
+    // 5. Controls: Damped Gyroscope with Unified Pointer Orbit
+    let targetAlpha = 0, targetBeta = 0, targetGamma = 0;
+    let currentAlpha = 0, currentBeta = 0, currentGamma = 0;
     let isDragging = false;
-    let prevMouseX = 0, prevMouseY = 0;
-    let manualYaw = 0, manualPitch = 0;
+    let prevPointerX = 0, prevPointerY = 0;
+    let velocityX = 0, velocityY = 0;
+    let targetManualYaw = 0, targetManualPitch = 0;
+    let currentManualYaw = 0, currentManualPitch = 0;
 
     const handleOrientation = (e: DeviceOrientationEvent) => {
       if (e.alpha !== null && e.beta !== null) {
         setHasGyro(true);
-        alpha = THREE.MathUtils.degToRad(e.alpha || 0);
-        beta = THREE.MathUtils.degToRad((e.beta || 90) - 90);
-        gamma = THREE.MathUtils.degToRad(e.gamma || 0);
+        targetAlpha = THREE.MathUtils.degToRad(e.alpha || 0);
+        targetBeta = THREE.MathUtils.degToRad((e.beta || 90) - 90);
+        targetGamma = THREE.MathUtils.degToRad(e.gamma || 0);
       }
     };
 
-    const handlePointerDown = (e: MouseEvent | TouchEvent) => {
+    const handlePointerDown = (e: PointerEvent) => {
       isDragging = true;
-      const clientX = "touches" in e ? e.touches[0].clientX : e.clientX;
-      const clientY = "touches" in e ? e.touches[0].clientY : e.clientY;
-      prevMouseX = clientX;
-      prevMouseY = clientY;
+      prevPointerX = e.clientX;
+      prevPointerY = e.clientY;
+      velocityX = 0;
+      velocityY = 0;
+
+      try {
+        (e.target as HTMLElement)?.setPointerCapture?.(e.pointerId);
+      } catch {
+        // Fallback
+      }
     };
 
-    const handlePointerMove = (e: MouseEvent | TouchEvent) => {
+    const handlePointerMove = (e: PointerEvent) => {
       if (!isDragging) return;
-      const clientX = "touches" in e ? e.touches[0].clientX : e.clientX;
-      const clientY = "touches" in e ? e.touches[0].clientY : e.clientY;
-      const deltaX = clientX - prevMouseX;
-      const deltaY = clientY - prevMouseY;
-      prevMouseX = clientX;
-      prevMouseY = clientY;
+      const deltaX = e.clientX - prevPointerX;
+      const deltaY = e.clientY - prevPointerY;
+      prevPointerX = e.clientX;
+      prevPointerY = e.clientY;
 
-      manualYaw -= deltaX * 0.005;
-      manualPitch = Math.max(-0.6, Math.min(0.6, manualPitch - deltaY * 0.005));
+      const sensitivity = 0.0035;
+      targetManualYaw -= deltaX * sensitivity;
+      targetManualPitch = Math.max(-0.6, Math.min(0.6, targetManualPitch - deltaY * sensitivity));
+
+      velocityX = deltaX * sensitivity;
+      velocityY = deltaY * sensitivity;
     };
 
-    const handlePointerUp = () => {
+    const handlePointerUp = (e: PointerEvent) => {
+      isDragging = false;
+      try {
+        (e.target as HTMLElement)?.releasePointerCapture?.(e.pointerId);
+      } catch {
+        // Fallback
+      }
+    };
+
+    const handlePointerCancel = () => {
       isDragging = false;
     };
 
     if (typeof window !== "undefined" && "DeviceOrientationEvent" in window) {
       window.addEventListener("deviceorientation", handleOrientation);
     }
-    window.addEventListener("mousedown", handlePointerDown);
-    window.addEventListener("mousemove", handlePointerMove);
-    window.addEventListener("mouseup", handlePointerUp);
-    window.addEventListener("touchstart", handlePointerDown);
-    window.addEventListener("touchmove", handlePointerMove);
-    window.addEventListener("touchend", handlePointerUp);
+    container.addEventListener("pointerdown", handlePointerDown);
+    container.addEventListener("pointermove", handlePointerMove);
+    container.addEventListener("pointerup", handlePointerUp);
+    container.addEventListener("pointercancel", handlePointerCancel);
 
-    // 6. Animation and Split-Screen Stereo Render Loop
+    // 6. Animation and Split-Screen Stereo Render Loop with Smooth Damping
     let animId: number;
     const clock = new THREE.Clock();
 
     const renderStereo = () => {
       animId = requestAnimationFrame(renderStereo);
+      const delta = Math.min(clock.getDelta(), 0.1);
       const time = clock.getElapsedTime();
 
+      // Inertial coasting when releasing drag
+      if (!isDragging) {
+        targetManualYaw -= velocityX * (60 * delta);
+        targetManualPitch = Math.max(-0.6, Math.min(0.6, targetManualPitch - velocityY * (60 * delta)));
+        const friction = Math.pow(0.88, delta * 60);
+        velocityX *= friction;
+        velocityY *= friction;
+        if (Math.abs(velocityX) < 0.00001) velocityX = 0;
+        if (Math.abs(velocityY) < 0.00001) velocityY = 0;
+      }
 
-      // Gentle floating animation on document slabs
+      // Smooth damping interpolation
+      const dampFactor = 1 - Math.exp(-12 * delta);
+      currentManualYaw += (targetManualYaw - currentManualYaw) * dampFactor;
+      currentManualPitch += (targetManualPitch - currentManualPitch) * dampFactor;
+
+      const gyroDamp = 1 - Math.exp(-10 * delta);
+      currentAlpha += (targetAlpha - currentAlpha) * gyroDamp;
+      currentBeta += (targetBeta - currentBeta) * gyroDamp;
+      currentGamma += (targetGamma - currentGamma) * gyroDamp;
+
+      // Gentle floating animation anchored to initialY (no drift)
       docMeshes.forEach((mesh, i) => {
-        mesh.position.y += Math.sin(time * 1.5 + i * 0.8) * 0.0004;
+        const initialY = mesh.userData.initialY ?? mesh.position.y;
+        mesh.position.y = initialY + Math.sin(time * 1.5 + i * 0.8) * 0.04;
       });
 
-      // Apply Orientation / Look rotation to cameras
+      // Animate 3D Voice & Resonance Sphere in VR
+      voiceOrb.update(time, isListeningRef.current, audioLevelsRef.current);
+
+      // Apply Orientation / Look rotation to cameras smoothly
       const euler = new THREE.Euler(
-        beta + manualPitch,
-        alpha + manualYaw,
-        -gamma,
+        currentBeta + currentManualPitch,
+        currentAlpha + currentManualYaw,
+        -currentGamma,
         "YXZ"
       );
       cameraLeft.quaternion.setFromEuler(euler);
@@ -403,13 +393,13 @@ export function StereoViewer({
     // 7. Cleanup
     return () => {
       cancelAnimationFrame(animId);
+      voiceOrb.dispose();
+      scene.remove(voiceOrb.group);
       window.removeEventListener("deviceorientation", handleOrientation);
-      window.removeEventListener("mousedown", handlePointerDown);
-      window.removeEventListener("mousemove", handlePointerMove);
-      window.removeEventListener("mouseup", handlePointerUp);
-      window.removeEventListener("touchstart", handlePointerDown);
-      window.removeEventListener("touchmove", handlePointerMove);
-      window.removeEventListener("touchend", handlePointerUp);
+      container.removeEventListener("pointerdown", handlePointerDown);
+      container.removeEventListener("pointermove", handlePointerMove);
+      container.removeEventListener("pointerup", handlePointerUp);
+      container.removeEventListener("pointercancel", handlePointerCancel);
 
       geometriesToDispose.forEach((g) => g.dispose());
       materialsToDispose.forEach((m) => m.dispose());
@@ -427,7 +417,7 @@ export function StereoViewer({
   return (
     <div className="fixed inset-0 z-50 bg-[#06040e] flex flex-col select-none overflow-hidden">
       {/* Stereoscopic Three.js canvas viewport */}
-      <div ref={containerRef} className="flex-1 w-full h-full relative" />
+      <div ref={containerRef} className="flex-1 w-full h-full relative touch-none cursor-grab active:cursor-grabbing" />
 
       {/* Optical Divider for Google Cardboard / VR Headsets */}
       <div className="absolute top-0 bottom-0 left-1/2 w-0.5 bg-gradient-to-b from-white/20 via-purple-500/30 to-white/20 pointer-events-none" />

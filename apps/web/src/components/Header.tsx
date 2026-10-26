@@ -4,7 +4,6 @@ import React, { useEffect, useState } from "react";
 import {
   FileText,
   Glasses,
-  Layers,
   Sparkles,
   MessageSquare,
   Box,
@@ -15,8 +14,8 @@ import {
 } from "lucide-react";
 
 interface HeaderProps {
-  selectedEntity: string;
-  onSelectEntity: (entityId: string) => void;
+  selectedEntity?: string;
+  onSelectEntity?: (entityId: string) => void;
   onOpenDocuments: () => void;
   onOpenVrModal: () => void;
   activeView: "spatial" | "ledger";
@@ -137,28 +136,6 @@ export function Header({
 
         {/* Right Actions & Theme Switch */}
         <div className="flex items-center space-x-2">
-          {/* Family Entity Selector */}
-          <div
-            className={`hidden md:flex items-center space-x-1.5 border rounded-full px-3 py-1 text-xs transition-colors ${
-              isLight
-                ? "bg-black/5 hover:bg-black/10 border-black/10 text-black/80"
-                : "bg-white/5 hover:bg-white/10 border-white/10 text-white/90"
-            }`}
-          >
-            <Layers className={`w-3 h-3 ${isLight ? "text-[#6D28D9]" : "text-[#A78BFA]"}`} />
-            <select
-              value={selectedEntity}
-              onChange={(e) => onSelectEntity(e.target.value)}
-              className="bg-transparent text-xs focus:outline-none cursor-pointer pr-1"
-            >
-              <option value="default_family" className={isLight ? "bg-white text-black" : "bg-[#0C0C0F] text-white"}>
-                Smith Family Trust
-              </option>
-              <option value="personal_portfolio" className={isLight ? "bg-white text-black" : "bg-[#0C0C0F] text-white"}>
-                Personal Superannuation
-              </option>
-            </select>
-          </div>
 
           {/* Dialogue Toggle Button */}
           <button

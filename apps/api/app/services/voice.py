@@ -90,13 +90,14 @@ def transcribe_with_groq(audio_bytes: bytes, suffix: str = ".webm") -> Optional[
 
 
 def transcribe_audio_file(audio_path: Path) -> str:
-    """Transcribe an audio file using local faster-whisper."""
+    """Transcribe an audio file using local faster-whisper with Voice Activity Detection."""
     model = get_whisper_model()
     segments, info = model.transcribe(
         str(audio_path),
         beam_size=5,
         language="en",
-        condition_on_previous_text=False
+        condition_on_previous_text=False,
+        vad_filter=True
     )
     transcript = " ".join([segment.text for segment in segments]).strip()
     return transcript

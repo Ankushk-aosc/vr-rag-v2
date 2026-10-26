@@ -8,7 +8,7 @@ import jwt
 from fastapi import Depends, HTTPException, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from app.config import settings
-from app.db import sqlite
+from app.services import pinecone_service
 
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours
@@ -67,10 +67,16 @@ async def get_current_user_optional(
     user_id = payload.get("sub")
     if not user_id:
         return None
-    user = sqlite.get_user_by_id(user_id)
+    user = pinecone_service.get_user_from_pinecone(user_id)
     if not user:
-        return None
-    user["memberships"] = sqlite.get_user_memberships(user_id)
+        return {
+            "id": user_id,
+            "email": payload.get("email", ""),
+            "memberships": [{"family_entity_id": "default_family", "role": "family_admin"}]
+        }
+    user["memberships"] = [
+        {"family_entity_id": user.get("family_entity_id", "default_family"), "role": user.get("role", "family_admin")}
+    ]
     return user
 
 

@@ -87,7 +87,9 @@ async def ask_by_voice(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Empty audio payload.")
 
     file_suffix = Path(file.filename).suffix or ".wav"
+    print(f"[VOICE] Received audio payload: {len(file_bytes)} bytes, suffix: {file_suffix}")
     transcript = await asyncio.to_thread(voice.transcribe_audio_bytes, file_bytes, file_suffix)
+    print(f"[VOICE] Raw transcript: '{transcript}'")
 
     clean_t = transcript.strip().lower().rstrip(".,!?")
     SILENCE_HALLUCINATIONS = {"you", "thank you", "thanks for watching", "subtitles by", "bye", "[music]", "[applause]"}

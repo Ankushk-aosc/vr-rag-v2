@@ -24,7 +24,7 @@ export function AetherCommandBar({
   hasMessages,
   onToggleDialogue,
   isDialogueOpen,
-  theme = "dark",
+  theme = "light",
   prompts,
   onListeningStateChange,
 }: AetherCommandBarProps) {
@@ -40,6 +40,13 @@ export function AetherCommandBar({
   const animFrameRef = useRef<number | null>(null);
   const timerIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const speechRecognitionRef = useRef<any>(null);
+  const accumulatedTranscriptRef = useRef<string>("");
+  const listeningCallbackRef = useRef(onListeningStateChange);
+
+  useEffect(() => {
+    listeningCallbackRef.current = onListeningStateChange;
+  }, [onListeningStateChange]);
 
   const isLight = theme === "light";
 
@@ -52,10 +59,22 @@ export function AetherCommandBar({
           "Summary of AAPL records across 11,558 rows",
         ];
 
-  // Clean up audio
+  // Clean up audio & speech recognition
   const cleanupAudio = useCallback(() => {
-    if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
-    if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
+    if (speechRecognitionRef.current) {
+      try {
+        speechRecognitionRef.current.abort();
+      } catch {}
+      speechRecognitionRef.current = null;
+    }
+    if (animFrameRef.current) {
+      cancelAnimationFrame(animFrameRef.current);
+      animFrameRef.current = null;
+    }
+    if (timerIntervalRef.current) {
+      clearInterval(timerIntervalRef.current);
+      timerIntervalRef.current = null;
+    }
     if (audioCtxRef.current && audioCtxRef.current.state !== "closed") {
       audioCtxRef.current.close().catch(() => {});
       audioCtxRef.current = null;
@@ -64,10 +83,11 @@ export function AetherCommandBar({
       streamRef.current.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
     }
+    setIsRecording(false);
     setRecordingSeconds(0);
     setAudioLevels([15, 20, 30, 25, 18]);
-    onListeningStateChange?.(false, [0, 0, 0, 0, 0]);
-  }, [onListeningStateChange]);
+    listeningCallbackRef.current?.(false, [0, 0, 0, 0, 0]);
+  }, []);
 
   // Real-time audio waveform analyzer
   const startAudioAnalysis = (stream: MediaStream) => {
@@ -87,6 +107,7 @@ export function AetherCommandBar({
 
       const bufferLength = analyser.frequencyBinCount;
       const dataArray = new Uint8Array(bufferLength);
+      let lastParentNotifyTime = 0;
 
       const updateLevels = () => {
         if (!analyser) return;
@@ -106,7 +127,13 @@ export function AetherCommandBar({
         });
 
         setAudioLevels(normalized);
-        onListeningStateChange?.(true, normalized);
+
+        // Throttle parent notification to ~16 updates/sec (every 60ms) to prevent render flooding
+        const now = performance.now();
+        if (now - lastParentNotifyTime > 60) {
+          lastParentNotifyTime = now;
+          listeningCallbackRef.current?.(true, normalized);
+        }
         animFrameRef.current = requestAnimationFrame(updateLevels);
       };
 
@@ -149,20 +176,80 @@ export function AetherCommandBar({
         const audioBlob = new Blob(audioChunksRef.current, {
           type: selectedMime || "audio/webm",
         });
-        onAudioCaptured(audioBlob);
+        const recognizedText = (accumulatedTranscriptRef.current || inputText).trim();
+
+        // 1. If Web Speech API captured text in-browser, submit immediately with zero latency!
+        if (recognizedText) {
+          onSendMessage(recognizedText);
+          setInputText("");
+        } else if (audioBlob.size >= 500) {
+          // 2. Otherwise fallback to server-side audio transcription
+          onAudioCaptured(audioBlob);
+        }
+
         cleanupAudio();
       };
 
-      mediaRecorder.start(250);
+      mediaRecorder.start(200);
       setIsRecording(true);
       setRecordingSeconds(0);
-      onListeningStateChange?.(true, [20, 25, 30, 25, 20]);
 
+      // Start timer immediately and reliably
+      if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
       timerIntervalRef.current = setInterval(() => {
         setRecordingSeconds((prev) => prev + 1);
       }, 1000);
 
+      listeningCallbackRef.current?.(true, [20, 25, 30, 25, 20]);
       startAudioAnalysis(stream);
+
+      // Initialize Web Speech API for real-time speech transcription
+      accumulatedTranscriptRef.current = "";
+      const SpeechRecognitionClass =
+        typeof window !== "undefined"
+          ? (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+          : null;
+
+      if (SpeechRecognitionClass) {
+        try {
+          const recognition = new SpeechRecognitionClass();
+          speechRecognitionRef.current = recognition;
+          recognition.continuous = true;
+          recognition.interimResults = true;
+          recognition.lang = "en-AU";
+
+          recognition.onresult = (event: any) => {
+            let currentInterim = "";
+            let currentFinal = "";
+            for (let i = event.resultIndex; i < event.results.length; ++i) {
+              const transcriptPart = event.results[i][0].transcript;
+              if (event.results[i].isFinal) {
+                currentFinal += transcriptPart;
+              } else {
+                currentInterim += transcriptPart;
+              }
+            }
+            if (currentFinal) {
+              accumulatedTranscriptRef.current =
+                (accumulatedTranscriptRef.current ? accumulatedTranscriptRef.current + " " : "") + currentFinal.trim();
+            }
+            const liveDisplay = (
+              accumulatedTranscriptRef.current + (currentInterim ? " " + currentInterim : "")
+            ).trim();
+            if (liveDisplay) {
+              setInputText(liveDisplay);
+            }
+          };
+
+          recognition.onerror = (e: any) => {
+            console.warn("SpeechRecognition notice:", e.error);
+          };
+
+          recognition.start();
+        } catch (e) {
+          console.warn("SpeechRecognition fallback:", e);
+        }
+      }
     } catch (err) {
       console.error("Microphone access error:", err);
       alert("Microphone permission denied or unsupported.");
@@ -171,7 +258,21 @@ export function AetherCommandBar({
   };
 
   const stopRecording = () => {
+    if (speechRecognitionRef.current) {
+      try {
+        speechRecognitionRef.current.stop();
+      } catch {}
+      speechRecognitionRef.current = null;
+    }
+
     if (mediaRecorderRef.current && isRecording) {
+      try {
+        if (mediaRecorderRef.current.state === "recording") {
+          mediaRecorderRef.current.requestData();
+        }
+      } catch (e) {
+        console.warn("MediaRecorder requestData flush:", e);
+      }
       mediaRecorderRef.current.stop();
       setIsRecording(false);
     }
@@ -197,9 +298,16 @@ export function AetherCommandBar({
     inputRef.current?.focus();
   };
 
+  const cleanupRef = useRef(cleanupAudio);
   useEffect(() => {
-    return () => cleanupAudio();
-  }, [cleanupAudio]);
+    cleanupRef.current = cleanupAudio;
+  });
+
+  useEffect(() => {
+    return () => {
+      cleanupRef.current();
+    };
+  }, []);
 
   const formatTimer = (totalSeconds: number) => {
     const mins = Math.floor(totalSeconds / 60);
@@ -285,15 +393,21 @@ export function AetherCommandBar({
 
           {/* Center: Real-time Audio Wave Ribbon OR Borderless Input Field */}
           {isRecording ? (
-            <div className="flex-1 flex items-center justify-between px-4">
-              <div className="flex items-center space-x-2">
-                <span className="w-2 h-2 rounded-full bg-red-500 animate-ping" />
-                <span className={`text-xs font-medium tracking-tight ${isLight ? "text-black" : "text-white"}`}>
-                  Listening ({formatTimer(recordingSeconds)})
+            <div className="flex-1 flex items-center justify-between px-3 overflow-hidden">
+              <div className="flex items-center space-x-2 truncate mr-2">
+                <span className="w-2 h-2 rounded-full bg-red-500 animate-ping flex-shrink-0" />
+                <span className={`text-xs font-medium tracking-tight ${isLight ? "text-black/70" : "text-white/70"}`}>
+                  ({formatTimer(recordingSeconds)})
                 </span>
-                <span className={`text-[11px] hidden sm:inline ${isLight ? "text-black/50" : "text-white/50"}`}>
-                  • Speak financial inquiry
-                </span>
+                {inputText ? (
+                  <span className={`text-xs font-semibold truncate ${isLight ? "text-purple-700" : "text-violet-300"}`}>
+                    &ldquo;{inputText}&rdquo;
+                  </span>
+                ) : (
+                  <span className={`text-[11px] hidden sm:inline ${isLight ? "text-black/50" : "text-white/50"}`}>
+                    Listening • Speak financial inquiry...
+                  </span>
+                )}
               </div>
 
               {/* Real-time Dynamic Waveform Bars */}

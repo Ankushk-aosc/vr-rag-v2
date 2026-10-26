@@ -12,7 +12,7 @@ import { ChatMessage, CitationItem, DocumentRecord } from "./src/types";
 import { fetchDocuments, queryAssistant, voiceAskAssistant } from "./src/services/api";
 
 export default function App() {
-  const [theme, setTheme] = useState<ThemeMode>("dark");
+  const [theme, setTheme] = useState<ThemeMode>("light");
   const [selectedEntity, setSelectedEntity] = useState("default_family");
   const [activeView, setActiveView] = useState<"spatial" | "chat">("spatial");
 
