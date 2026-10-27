@@ -1,10 +1,21 @@
 import logging
+import time
 from typing import Any, Dict, List, Optional
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
 _pinecone_client: Optional[Any] = None
+_index: Optional[Any] = None
+
+
+def _field(obj: Any, key: str, default: Any = None) -> Any:
+    """Read a field from either a dict-style or object-style Pinecone SDK response."""
+    if obj is None:
+        return default
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
 
 
 def get_pinecone_client() -> Optional[Any]:
@@ -45,12 +56,15 @@ def ensure_index_exists():
 
 
 def get_index():
+    global _index
     pc = get_pinecone_client()
     if not pc:
         raise ValueError(
             "Pinecone API key is not configured. Please set PINECONE_API_KEY in your .env file."
         )
-    return ensure_index_exists()
+    if _index is None:
+        _index = ensure_index_exists()
+    return _index
 
 
 def upsert_vectors(
@@ -124,11 +138,11 @@ def query_similar_chunks(
     )
     
     matches = []
-    for m in results.get("matches", []):
-        meta = m.get("metadata", {})
+    for m in _field(results, "matches", []) or []:
+        meta = dict(_field(m, "metadata", {}) or {})
         matches.append({
-            "chunk_id": m["id"],
-            "score": m["score"],
+            "chunk_id": _field(m, "id"),
+            "score": float(_field(m, "score", 0.0) or 0.0),
             "metadata": meta,
             "text": meta.get("text", "")
         })
@@ -181,8 +195,8 @@ def list_documents_from_pinecone(family_entity_id: str = "default_family") -> Li
             include_metadata=True
         )
         docs = []
-        for match in res.get("matches", []):
-            meta = match.get("metadata", {})
+        for match in _field(res, "matches", []) or []:
+            meta = dict(_field(match, "metadata", {}) or {})
             if meta.get("family_entity_id") == family_entity_id or family_entity_id == "*":
                 docs.append(meta)
         return docs
@@ -198,13 +212,32 @@ def get_document_from_pinecone(doc_id: str) -> Optional[Dict[str, Any]]:
     index = get_index()
     try:
         res = index.fetch(ids=[doc_id], namespace=DOCUMENTS_REGISTRY_NAMESPACE)
-        vectors = res.get("vectors", {})
-        if doc_id in vectors and vectors[doc_id].get("metadata"):
-            return vectors[doc_id]["metadata"]
-        return None
+        vectors = _field(res, "vectors", {}) or {}
+        meta = _field(vectors.get(doc_id), "metadata")
+        return dict(meta) if meta else None
     except Exception as e:
         logger.error(f"Error fetching document from Pinecone: {e}")
         return None
+
+
+_doc_name_cache: Dict[str, str] = {}
+_doc_name_cache_at = 0.0
+
+
+def get_document_names(force: bool = False) -> Dict[str, str]:
+    """document_id -> original filename, cached for 5 minutes (chunk metadata often lacks names)."""
+    global _doc_name_cache, _doc_name_cache_at
+    if force or not _doc_name_cache or time.time() - _doc_name_cache_at > 300:
+        try:
+            docs = list_documents_from_pinecone("*")
+            _doc_name_cache = {
+                str(d.get("id")): str(d.get("original_name") or d.get("filename") or "")
+                for d in docs if d.get("id")
+            }
+            _doc_name_cache_at = time.time()
+        except Exception as e:
+            logger.warning("Could not refresh document name cache: %s", e)
+    return _doc_name_cache
 
 
 # --- Cloud-Native Users Registry in Pinecone ---
@@ -247,10 +280,9 @@ def get_user_from_pinecone(user_id_or_email: str) -> Optional[Dict[str, Any]]:
     lookup_id = f"email_{key}" if "@" in key else user_id_or_email
     try:
         res = index.fetch(ids=[lookup_id], namespace=USERS_REGISTRY_NAMESPACE)
-        vectors = res.get("vectors", {})
-        if lookup_id in vectors and vectors[lookup_id].get("metadata"):
-            return vectors[lookup_id]["metadata"]
-        return None
+        vectors = _field(res, "vectors", {}) or {}
+        meta = _field(vectors.get(lookup_id), "metadata")
+        return dict(meta) if meta else None
     except Exception as e:
         logger.error(f"Error fetching user from Pinecone: {e}")
         return None
