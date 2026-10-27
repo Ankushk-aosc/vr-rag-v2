@@ -33,16 +33,16 @@ export interface SpatialWorldOptions {
 }
 
 const DEFAULTS: Record<string, SpatialPlacement> = {
-  dialogue: { p: [-1.05, 1.6, -0.45], ry: 0.3 },
-  thinking: { p: [1.55, 1.62, -0.2], ry: -0.45 },
-  orb: { p: [0.2, 0.95, 0.95], ry: 0 },
+  dialogue: { p: [-0.98, 1.48, -0.15], ry: 0.28 },
+  thinking: { p: [1.32, 1.50, -0.05], ry: -0.36 },
+  orb: { p: [0.15, 0.95, 0.70], ry: 0 },
 };
 
 function docDefault(i: number, n: number): SpatialPlacement {
-  const theta = n <= 1 ? 0 : -0.95 + (1.9 * i) / (n - 1);
-  const x = Math.sin(theta) * 3.3;
-  const z = 0.4 - Math.cos(theta) * 3.3;
-  return { p: [x, 1.5, z], ry: Math.atan2(-x, 0.4 - z) };
+  const theta = n <= 1 ? 0 : -0.85 + (1.7 * i) / (n - 1);
+  const x = Math.sin(theta) * 2.5;
+  const z = 0.3 - Math.cos(theta) * 2.5;
+  return { p: [x, 1.48, z], ry: Math.atan2(-x, 0.3 - z) };
 }
 
 /** The 3D content shared by every immersive view. Each object can be moved independently. */
@@ -72,13 +72,13 @@ export class SpatialWorld {
     this.scene.add(this.root);
     this.buildEnvironment(isLight);
 
-    // Dialogue panel
-    this.dialogue = new CanvasPanel({ width: 1200, height: 860, worldWidth: 1.9, renderer: opts.renderer, name: "dialogue" });
+    // Dialogue panel (3x supersampling)
+    this.dialogue = new CanvasPanel({ width: 1200, height: 860, worldWidth: 1.9, pixelRatio: 3, renderer: opts.renderer, name: "dialogue" });
     this.root.add(this.dialogue.mesh);
     this.items.push({ id: "dialogue", object: this.dialogue.mesh });
 
     // "Create 3D dashboard" button, attached under the dialogue panel (moves with it, click only)
-    this.dashboardButton = new CanvasPanel({ width: 620, height: 104, worldWidth: 0.95, renderer: opts.renderer, name: "dashboard-button" });
+    this.dashboardButton = new CanvasPanel({ width: 620, height: 104, worldWidth: 0.95, pixelRatio: 3, renderer: opts.renderer, name: "dashboard-button" });
     this.dashboardButton.mesh.position.set(0, -(1.9 * 860) / 1200 / 2 - 0.1, 0.01);
     this.dashboardButton.mesh.visible = false;
     this.dialogue.mesh.add(this.dashboardButton.mesh);
@@ -89,15 +89,15 @@ export class SpatialWorld {
       onClick: () => this.opts.onCreateDashboard?.(),
     });
 
-    // Reasoning panel
-    this.thinking = new CanvasPanel({ width: 800, height: 640, worldWidth: 1.25, renderer: opts.renderer, name: "thinking" });
+    // Reasoning panel (3x supersampling)
+    this.thinking = new CanvasPanel({ width: 800, height: 640, worldWidth: 1.25, pixelRatio: 3, renderer: opts.renderer, name: "thinking" });
     this.root.add(this.thinking.mesh);
     this.items.push({ id: "thinking", object: this.thinking.mesh });
 
-    // Voice orb + status label move together
+    // Voice orb + status label move together (3x supersampling)
     this.orb = new VoiceOrb3D(0.3);
     this.orbGroup.add(this.orb.group);
-    this.orbLabel = new CanvasPanel({ width: 560, height: 120, worldWidth: 0.86, renderer: opts.renderer, name: "orb-label" });
+    this.orbLabel = new CanvasPanel({ width: 560, height: 120, worldWidth: 0.86, pixelRatio: 3, renderer: opts.renderer, name: "orb-label" });
     this.orbLabel.mesh.position.set(0, -0.47, 0);
     this.orbGroup.add(this.orbLabel.mesh);
     this.root.add(this.orbGroup);
@@ -177,7 +177,7 @@ export class SpatialWorld {
       const edge = new THREE.MeshStandardMaterial({ color: isLight ? 0xd9d3ee : 0x2a2140, roughness: 0.5 });
       const face = new THREE.MeshBasicMaterial({ map: tex, toneMapped: false, fog: false });
       // BoxGeometry face order: +x, -x, +y, -y, +z (front), -z (back)
-      const mesh = new THREE.Mesh(new THREE.BoxGeometry(0.82, 1.16, 0.03), [edge, edge, edge, edge, face, edge]);
+      const mesh = new THREE.Mesh(new THREE.BoxGeometry(0.88, 1.24, 0.03), [edge, edge, edge, edge, face, edge]);
       const group = new THREE.Group();
       group.add(mesh);
       this.root.add(group);
@@ -195,8 +195,17 @@ export class SpatialWorld {
   }
 
   applyLayout() {
-    if (this.dashboard3d && spatialLayout.get("dashboard")) {
-      spatialLayout.apply("dashboard", this.dashboard3d.group, { p: [0, 1.6, 0], ry: 0 });
+    if (this.dashboard3d) {
+      const headerSaved = spatialLayout.get("dashboard-header");
+      if (headerSaved) {
+        spatialLayout.apply("dashboard-header", this.dashboard3d.headerGroup, headerSaved);
+      }
+      this.dashboard3d.graphs.forEach((g, idx) => {
+        const graphSaved = spatialLayout.get(`dashboard-graph-${idx}`);
+        if (graphSaved) {
+          spatialLayout.apply(`dashboard-graph-${idx}`, g.group, graphSaved);
+        }
+      });
     }
     spatialLayout.apply("dialogue", this.dialogue.mesh, DEFAULTS.dialogue);
     spatialLayout.apply("thinking", this.thinking.mesh, DEFAULTS.thinking);
@@ -211,42 +220,46 @@ export class SpatialWorld {
     dir.y = 0;
     if (dir.lengthSq() < 1e-6) dir.set(0, 0, -1);
     dir.normalize();
-    const pos = eye.clone().addScaledVector(dir, this.spawnDistance);
-    pos.y = THREE.MathUtils.clamp(eye.y, 1.3, 1.8);
+    const dist = Math.min(this.spawnDistance, 2.6);
+    const pos = eye.clone().addScaledVector(dir, dist);
+    pos.y = THREE.MathUtils.clamp(eye.y - 0.05, 1.3, 1.7);
     group.position.copy(pos);
     group.rotation.set(0, Math.atan2(eye.x - pos.x, eye.z - pos.z), 0);
   }
 
   /** Show `dashboard` in 3D (replacing the previous one), or remove it when null. */
   private syncDashboard(dashboard: Dashboard | null, focus: number, viewer?: THREE.Vector3, forward?: THREE.Vector3) {
-    if (focus !== this.dashboardFocus) {
+    const focusChanged = focus !== this.dashboardFocus;
+    if (focusChanged) {
       this.dashboardFocus = focus;
+    }
+
+    const currentId = this.dashboard3d?.dashboardId || null;
+    const targetId = dashboard?.id || null;
+
+    if (currentId !== targetId) {
       if (this.dashboard3d) {
-        this.placeInFront(this.dashboard3d.group, viewer, forward);
-        spatialLayout.save("dashboard", this.dashboard3d.group);
+        this.root.remove(this.dashboard3d.group);
+        for (const item of this.dashboard3d.items) {
+          const i = this.items.indexOf(item);
+          if (i >= 0) this.items.splice(i, 1);
+        }
+        this.dashboard3d.dispose();
+        this.dashboard3d = null;
       }
-    }
-    if ((dashboard?.id || null) === (this.dashboard3d?.dashboardId || null)) return;
-    if (this.dashboard3d) {
-      this.root.remove(this.dashboard3d.group);
-      for (const item of this.dashboard3d.items) {
-        const i = this.items.indexOf(item);
-        if (i >= 0) this.items.splice(i, 1);
+      if (dashboard) {
+        const theme = this.opts.theme === "light" && this.opts.environment === "pavilion" ? "light" : "dark";
+        const d3 = new Dashboard3D(dashboard, theme, this.opts.renderer, () => this.opts.onCloseDashboard?.());
+        this.dashboard3d = d3;
+        this.root.add(d3.group);
+        this.items.push(...d3.items);
+
+        // Position individual graphs and header directly in front of viewer
+        d3.layoutInFront(viewer, forward);
       }
-      this.dashboard3d.dispose();
-      this.dashboard3d = null;
-    }
-    if (!dashboard) return;
-    const theme = this.opts.theme === "light" && this.opts.environment === "pavilion" ? "light" : "dark";
-    const d3 = new Dashboard3D(dashboard, theme, this.opts.renderer, () => this.opts.onCloseDashboard?.());
-    this.dashboard3d = d3;
-    this.root.add(d3.group);
-    this.items.push(...d3.items);
-    if (spatialLayout.get("dashboard")) {
-      spatialLayout.apply("dashboard", d3.group, { p: [0, 1.6, 0], ry: 0 });
-    } else {
-      // first dashboard: spawn it in front of wherever the viewer is looking
-      this.placeInFront(d3.group, viewer, forward);
+    } else if (focusChanged && this.dashboard3d) {
+      // User clicked "View in 3D" or refocused: bring right in front
+      this.dashboard3d.layoutInFront(viewer, forward);
     }
   }
 

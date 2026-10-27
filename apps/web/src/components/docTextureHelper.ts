@@ -76,11 +76,13 @@ export function createDocTexture(
   fallbackCode: string = "AAPL • FY20-24"
 ): THREE.CanvasTexture {
   const canvas = document.createElement("canvas");
-  // drawn in 512x724 units at 2x resolution so text stays sharp up close and in VR
-  canvas.width = 1024;
-  canvas.height = 1448;
+  // drawn in 512x724 units at 3x supersampling resolution (1536x2172) so text stays crystal-sharp
+  canvas.width = 1536;
+  canvas.height = 2172;
   const ctx = canvas.getContext("2d")!;
-  ctx.scale(2, 2);
+  ctx.scale(3, 3);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
 
   const ext = doc ? doc.original_name.split(".").pop()?.toUpperCase() || "DOC" : "DOC";
   const format = getFormatStyle(ext);
@@ -249,7 +251,8 @@ export function createDocTexture(
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.generateMipmaps = true;
   texture.minFilter = THREE.LinearMipmapLinearFilter;
-  texture.anisotropy = 8;
+  texture.magFilter = THREE.LinearFilter;
+  texture.anisotropy = 16;
   texture.needsUpdate = true;
   return texture;
 }

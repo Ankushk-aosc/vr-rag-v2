@@ -157,8 +157,13 @@ export default function SovereignPavilionApp() {
         setAck(`Created dashboard **${d.title}** for: ${question}`);
         setDashboards((prev) => [...prev.filter((x) => x.id !== d.id), d].slice(-8));
         setActiveDashboardId(d.id);
-        setIsDashboardOpen(true);
         setShowDashboardIn3D(true);
+        setDashboardFocus((n) => n + 1);
+        if (activeView === "spatial") {
+          setIsDashboardOpen(false);
+        } else {
+          setIsDashboardOpen(true);
+        }
         setDashboardStatus((prev) => ({ ...prev, [opts.msgId]: { state: "ready", dashboardId: d.id } }));
         if (opts.speak) engineRef.current?.say(`Here is your dashboard: ${d.title}.`);
       } catch (err: any) {
@@ -561,6 +566,7 @@ export default function SovereignPavilionApp() {
           if (activeView !== "spatial") setActiveView("spatial");
           setShowDashboardIn3D(true);
           setDashboardFocus((n) => n + 1);
+          setIsDashboardOpen(false);
         }}
         theme={theme}
       />

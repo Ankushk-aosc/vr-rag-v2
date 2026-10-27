@@ -29,8 +29,11 @@ export class CanvasPanel {
     pixelRatio?: number;
     renderer?: THREE.WebGLRenderer;
     name?: string;
+    depthWrite?: boolean;
+    depthTest?: boolean;
+    renderOrder?: number;
   }) {
-    const ratio = opts.pixelRatio ?? 2;
+    const ratio = opts.pixelRatio ?? 3;
     this.width = opts.width;
     this.height = opts.height;
     this.canvas = document.createElement("canvas");
@@ -38,13 +41,15 @@ export class CanvasPanel {
     this.canvas.height = Math.round(opts.height * ratio);
     this.ctx = this.canvas.getContext("2d")!;
     this.ctx.scale(ratio, ratio);
+    this.ctx.imageSmoothingEnabled = true;
+    this.ctx.imageSmoothingQuality = "high";
 
     this.texture = new THREE.CanvasTexture(this.canvas);
     this.texture.colorSpace = THREE.SRGBColorSpace;
     this.texture.generateMipmaps = true;
     this.texture.minFilter = THREE.LinearMipmapLinearFilter;
     this.texture.magFilter = THREE.LinearFilter;
-    this.texture.anisotropy = opts.renderer ? opts.renderer.capabilities.getMaxAnisotropy() : 8;
+    this.texture.anisotropy = opts.renderer ? opts.renderer.capabilities.getMaxAnisotropy() : 16;
 
     this.material = new THREE.MeshBasicMaterial({
       map: this.texture,
@@ -52,11 +57,15 @@ export class CanvasPanel {
       toneMapped: false,
       fog: false,
       side: THREE.DoubleSide,
-      depthWrite: true,
+      depthWrite: opts.depthWrite ?? false,
+      depthTest: opts.depthTest ?? true,
     });
     const worldHeight = (opts.worldWidth * opts.height) / opts.width;
     this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(opts.worldWidth, worldHeight), this.material);
     this.mesh.name = opts.name || "canvas-panel";
+    if (opts.renderOrder !== undefined) {
+      this.mesh.renderOrder = opts.renderOrder;
+    }
   }
 
   /** Redraw only when `key` differs from the last drawn content. */

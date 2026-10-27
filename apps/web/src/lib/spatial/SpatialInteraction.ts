@@ -14,6 +14,7 @@ export interface DraggableItem {
   id: string;
   object: THREE.Object3D;
   onClick?: () => void;
+  onClickDetail?: (hit: THREE.Intersection | null) => void;
   onHover?: (hovered: boolean) => void;
   /** Receives the exact ray hit while hovered (null when the pointer leaves) - used for chart tooltips. */
   onHoverDetail?: (hit: THREE.Intersection | null) => void;
@@ -49,6 +50,7 @@ type PointerDrag =
   | {
       kind: "object";
       item: DraggableItem;
+      lastHit: THREE.Intersection;
       camera: THREE.Camera;
       plane: THREE.Plane;
       offset: THREE.Vector3;
@@ -167,12 +169,14 @@ export class SpatialInteraction {
       const normal = new THREE.Vector3();
       camera.getWorldDirection(normal).negate();
       const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(normal, hit.point);
+      const worldPos = hit.item.object.getWorldPosition(new THREE.Vector3());
       this.drag = {
         kind: "object",
         item: hit.item,
+        lastHit: hit.hit,
         camera,
         plane,
-        offset: hit.item.object.position.clone().sub(hit.point),
+        offset: worldPos.sub(hit.point),
         startX: e.clientX,
         startY: e.clientY,
         moved: false,
@@ -207,8 +211,15 @@ export class SpatialInteraction {
     const point = new THREE.Vector3();
     if (this.raycaster.ray.intersectPlane(d.plane, point)) {
       const obj = d.item.object;
-      obj.position.copy(point.add(d.offset));
-      obj.position.y = Math.max(0.15, Math.min(4.5, obj.position.y));
+      const targetWorld = point.add(d.offset);
+      targetWorld.y = Math.max(0.15, Math.min(4.5, targetWorld.y));
+      if (obj.parent) {
+        const localTarget = targetWorld.clone();
+        obj.parent.worldToLocal(localTarget);
+        obj.position.copy(localTarget);
+      } else {
+        obj.position.copy(targetWorld);
+      }
       if (d.item.faceCamera !== false) {
         this.faceTowards(obj, d.camera.getWorldPosition(new THREE.Vector3()));
       }
@@ -226,7 +237,10 @@ export class SpatialInteraction {
     if (!d) return;
     if (d.kind === "object") {
       if (d.moved && !d.item.fixed && !this.opts.isLocked?.()) spatialLayout.save(d.item.id, d.item.object);
-      else if (!d.moved) d.item.onClick?.();
+      else if (!d.moved) {
+        d.item.onClick?.();
+        d.item.onClickDetail?.(d.lastHit);
+      }
       this.opts.dom.style.cursor = this.hovered ? "grab" : "default";
     }
   }
@@ -243,9 +257,14 @@ export class SpatialInteraction {
     if (!camera) return;
     const camPos = camera.getWorldPosition(new THREE.Vector3());
     const obj = item.object;
-    const dir = obj.position.clone().sub(camPos);
+    const worldObjPos = obj.getWorldPosition(new THREE.Vector3());
+    const dir = worldObjPos.clone().sub(camPos);
     const dist = THREE.MathUtils.clamp(dir.length() * (1 + Math.sign(e.deltaY) * 0.08), 0.8, 10);
-    obj.position.copy(camPos.add(dir.normalize().multiplyScalar(dist)));
+    const newWorld = camPos.add(dir.normalize().multiplyScalar(dist));
+    if (obj.parent) {
+      obj.parent.worldToLocal(newWorld);
+    }
+    obj.position.copy(newWorld);
     if (this.wheelSaveTimer) clearTimeout(this.wheelSaveTimer);
     this.wheelSaveTimer = setTimeout(() => spatialLayout.save(item.id, obj), 300);
   }

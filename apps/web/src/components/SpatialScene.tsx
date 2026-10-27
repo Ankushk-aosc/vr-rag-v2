@@ -58,7 +58,7 @@ export function SpatialScene({
     if (!container) return;
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: "high-performance" });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 3.0));
     renderer.setSize(container.clientWidth, container.clientHeight);
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -90,8 +90,8 @@ export function SpatialScene({
     dolly.add(camera);
 
     let yaw = 0;
-    let pitch = 0.08;
-    let radius = 5.2;
+    let pitch = 0.05;
+    let radius = 2.45;
     let gyroYaw = 0;
     let gyroPitch = 0;
     const placeCamera = () => {
@@ -129,7 +129,7 @@ export function SpatialScene({
         placeCamera();
       },
       onBackgroundWheel: (dy) => {
-        radius = THREE.MathUtils.clamp(radius * (1 + Math.sign(dy) * 0.08), 2.2, 9);
+        radius = THREE.MathUtils.clamp(radius * (1 + Math.sign(dy) * 0.08), 1.4, 6.5);
         placeCamera();
       },
       onThumbstick: (hand, x, y, dt) => {

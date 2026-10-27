@@ -40,14 +40,14 @@ export const EMPTY_SPATIAL_STATE: SpatialState = {
 };
 
 const C = {
-  bg: "rgba(18, 14, 30, 0.97)",
-  border: "rgba(167, 139, 250, 0.55)",
-  violet: "#C4B5FD",
-  violetDeep: "#8B5CF6",
-  gold: "#E2C25B",
-  text: "#F5F3FF",
-  dim: "rgba(245, 243, 255, 0.62)",
-  faint: "rgba(245, 243, 255, 0.38)",
+  bg: "rgba(12, 9, 22, 0.98)",
+  border: "rgba(167, 139, 250, 0.70)",
+  violet: "#DDD6FE",
+  violetDeep: "#A78BFA",
+  gold: "#FDE047",
+  text: "#FFFFFF",
+  dim: "rgba(255, 255, 255, 0.88)",
+  faint: "rgba(255, 255, 255, 0.60)",
   green: "#6EE7B7",
 };
 
@@ -63,24 +63,24 @@ function frame(ctx: CanvasRenderingContext2D, w: number, h: number, title: strin
   roundRect(ctx, 6, 6, w - 12, h - 12, 30);
   ctx.fillStyle = C.bg;
   ctx.fill();
-  ctx.lineWidth = 3;
+  ctx.lineWidth = 3.5;
   ctx.strokeStyle = C.border;
   ctx.stroke();
 
   ctx.fillStyle = C.gold;
   ctx.fillRect(40, 34, 80, 4);
-  ctx.font = `700 22px ${MONO}`;
+  ctx.font = `700 24px ${MONO}`;
   ctx.fillStyle = C.violet;
   ctx.textBaseline = "alphabetic";
   ctx.fillText(title, 40, 76);
 
-  ctx.font = `700 17px ${MONO}`;
+  ctx.font = `700 18px ${MONO}`;
   const pw = ctx.measureText(pill).width + 36;
-  roundRect(ctx, w - 40 - pw, 50, pw, 36, 18);
+  roundRect(ctx, w - 40 - pw, 48, pw, 38, 19);
   ctx.fillStyle = `${pillColor}33`;
   ctx.fill();
   ctx.strokeStyle = pillColor;
-  ctx.lineWidth = 2;
+  ctx.lineWidth = 2.5;
   ctx.stroke();
   ctx.fillStyle = pillColor;
   ctx.textAlign = "center";
@@ -141,10 +141,10 @@ export function drawDialoguePanel(ctx: CanvasRenderingContext2D, w: number, h: n
   roundRect(ctx, left - 8, y, maxW + 16, 86, 18);
   ctx.fillStyle = "rgba(255,255,255,0.05)";
   ctx.fill();
-  ctx.font = `700 15px ${FONT}`;
-  ctx.fillStyle = C.violetDeep;
+  ctx.font = `700 16px ${FONT}`;
+  ctx.fillStyle = C.violet;
   ctx.fillText(s.phase === "listening" && s.interim ? "HEARING YOU…" : "YOUR QUESTION", left + 10, y + 28);
-  ctx.font = `500 21px ${FONT}`;
+  ctx.font = `600 23px ${FONT}`;
   ctx.fillStyle = C.text;
   const qLines = wrapLines(ctx, question || "Tap the orb or use the mic, then ask about your documents.", maxW - 20);
   ctx.fillText(qLines[0] + (qLines.length > 1 ? " …" : ""), left + 10, y + 62);
@@ -152,12 +152,12 @@ export function drawDialoguePanel(ctx: CanvasRenderingContext2D, w: number, h: n
 
   const bottomLimit = h - (s.citations.length ? 96 : 50);
   if (!s.answer) {
-    ctx.font = `500 22px ${FONT}`;
+    ctx.font = `500 23px ${FONT}`;
     ctx.fillStyle = C.dim;
     const hint = s.streaming
       ? "Searching your documents and reasoning…"
       : s.error || "Answers appear here as they stream in. Grab any panel to move it.";
-    wrapLines(ctx, hint, maxW).forEach((l, i) => ctx.fillText(l, left, y + 30 + i * 32));
+    wrapLines(ctx, hint, maxW).forEach((l, i) => ctx.fillText(l, left, y + 30 + i * 34));
   }
 
   let truncated = false;
@@ -267,10 +267,10 @@ export function drawThinkingPanel(ctx: CanvasRenderingContext2D, w: number, h: n
   const maxW = w - 80;
   let y = 120;
   if (!s.stages.length) {
-    ctx.font = `400 20px ${FONT}`;
+    ctx.font = `500 22px ${FONT}`;
     ctx.fillStyle = C.dim;
     wrapLines(ctx, "Live search, ranking and model reasoning appear here while an answer is generated.", maxW).forEach(
-      (l, i) => ctx.fillText(l, left, y + 24 + i * 28)
+      (l, i) => ctx.fillText(l, left, y + 28 + i * 32)
     );
     return;
   }
