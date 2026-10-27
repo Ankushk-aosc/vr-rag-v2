@@ -1,25 +1,61 @@
 "use client";
 
-import React, { useEffect, useRef, useState, useCallback } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { Header } from "../components/Header";
 import { RegulatoryBanner } from "../components/RegulatoryBanner";
 import { SpatialScene } from "../components/SpatialScene";
 import { AetherCommandBar } from "../components/AetherCommandBar";
 import { ChatHUD } from "../components/ChatHUD";
+import { ThinkingPanel } from "../components/ThinkingPanel";
 import { LedgerView } from "../components/LedgerView";
 import { DocumentDrawer } from "../components/DocumentDrawer";
 import { CitationInspector } from "../components/CitationInspector";
 import { VrLaunchModal } from "../components/VrLaunchModal";
 import { StereoViewer } from "../components/StereoViewer";
-import { ChatMessage, CitationItem, DocumentRecord } from "../types";
+import { DashboardPanel } from "../components/DashboardPanel";
 import {
-  fetchDocuments,
-  fetchDocumentSuggestions,
-  queryAssistant,
-  voiceAskAssistant,
-} from "../lib/api";
+  ChatMessage,
+  CitationItem,
+  Dashboard,
+  DashboardStatus,
+  DocumentRecord,
+  HistoryTurn,
+  ThinkingStage,
+} from "../types";
+import { createDashboard, fetchDocuments, fetchDocumentSuggestions, streamQuery, StreamEvent } from "../lib/api";
+import { hasOwnTopic, isDashboardRequest } from "../lib/charts/intent";
 import { enterImmersiveVr } from "../lib/webxr";
+import { VoiceEngine } from "../lib/voice/VoiceEngine";
+import { useVoiceSnapshot, voiceStore } from "../lib/voice/voiceStore";
+import { EMPTY_SPATIAL_STATE, SpatialState } from "../lib/spatial/spatialPanels";
+import { spatialLayout } from "../lib/spatial/spatialLayout";
+import { layoutStore, useLayoutState } from "../lib/layout/layoutStore";
+
+const now = () => new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+const HISTORY_MESSAGES = 6;
+
+function buildHistory(messages: ChatMessage[]): HistoryTurn[] {
+  return messages
+    .filter((m) => (m.sender === "user" || m.sender === "assistant") && m.content && !m.streaming)
+    .slice(-HISTORY_MESSAGES)
+    .map((m) => ({ role: m.sender === "user" ? "user" : "assistant", content: m.content }));
+}
+
+function docCitation(doc: DocumentRecord): CitationItem {
+  const ext = doc.original_name.split(".").pop()?.toUpperCase() || "FILE";
+  return {
+    chunk_id: doc.file_hash,
+    document_id: doc.id,
+    document_name: doc.original_name,
+    page_number: 1,
+    is_table: /\.(xlsx|xls|csv)$/i.test(doc.original_name),
+    snippet:
+      `${ext} document • ${doc.total_pages} page(s) • ${(doc.file_size / 1024).toFixed(1)} KB\n` +
+      `Status: ${doc.status} • Uploaded: ${doc.uploaded_at ? new Date(doc.uploaded_at).toLocaleString() : "unknown"}\n` +
+      `SHA-256: ${doc.file_hash}\n\nAsk a question to retrieve cited passages from this document.`,
+  };
+}
 
 export default function SovereignPavilionApp() {
   const [theme, setTheme] = useState<"dark" | "light">("light");
@@ -28,219 +64,393 @@ export default function SovereignPavilionApp() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [documents, setDocuments] = useState<DocumentRecord[]>([]);
   const [suggestions, setSuggestions] = useState<string[]>([]);
-  const [isProcessing, setIsProcessing] = useState<boolean>(false);
-  const [statusText, setStatusText] = useState<string>("");
-  const [isDialogueOpen, setIsDialogueOpen] = useState<boolean>(false);
-
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [isDialogueOpen, setIsDialogueOpen] = useState(false);
+  const [isThinkingOpen, setIsThinkingOpen] = useState(false);
   const [selectedCitation, setSelectedCitation] = useState<CitationItem | null>(null);
-  const [isDocDrawerOpen, setIsDocDrawerOpen] = useState<boolean>(false);
-  const [isVrModalOpen, setIsVrModalOpen] = useState<boolean>(false);
-  const [isStereoOpen, setIsStereoOpen] = useState<boolean>(false);
-  const [isListening, setIsListening] = useState<boolean>(false);
-  const [audioLevels, setAudioLevels] = useState<number[]>([15, 20, 30, 25, 18]);
+  const [isDocDrawerOpen, setIsDocDrawerOpen] = useState(false);
+  const [isVrModalOpen, setIsVrModalOpen] = useState(false);
+  const [isStereoOpen, setIsStereoOpen] = useState(false);
+  const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null);
+  const [dashboards, setDashboards] = useState<Dashboard[]>([]);
+  const [activeDashboardId, setActiveDashboardId] = useState<string | null>(null);
+  const [dashboardStatus, setDashboardStatus] = useState<Record<string, DashboardStatus>>({});
+  const [isDashboardOpen, setIsDashboardOpen] = useState(false);
+  const [showDashboardIn3D, setShowDashboardIn3D] = useState(true);
+  const [dashboardFocus, setDashboardFocus] = useState(0);
 
+  const voice = useVoiceSnapshot();
+  const layout = useLayoutState();
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
+  const messagesRef = useRef<ChatMessage[]>([]);
+  const abortRef = useRef<AbortController | null>(null);
+  const engineRef = useRef<VoiceEngine | null>(null);
+  const startedAtRef = useRef(0);
+  const spatialStateRef = useRef<SpatialState>(EMPTY_SPATIAL_STATE);
+  /** What each message's dashboard charts (so "Rebuild" reuses the real subject, not "create a graph"). */
+  const dashboardSourceRef = useRef<Record<string, { question: string; answer: string }>>({});
+  /** Assistant messages that are dashboard acknowledgements ("Created dashboard X"), updated in place. */
+  const ackIdsRef = useRef<Set<string>>(new Set());
+  messagesRef.current = messages;
 
-  // Sync theme with document class (defaulting to light mode)
+  // ---------------------------------------------------------------- theme & data
+
   useEffect(() => {
-    const savedTheme = localStorage.getItem("sovereign_theme") as "dark" | "light" | null;
-    const activeTheme = savedTheme || "light";
-    setTheme(activeTheme);
-    document.documentElement.classList.toggle("light", activeTheme === "light");
+    let saved: "dark" | "light" | null = null;
+    try {
+      saved = localStorage.getItem("sovereign_theme") as "dark" | "light" | null;
+    } catch {
+      /* storage blocked */
+    }
+    const active = saved || "light";
+    setTheme(active);
+    document.documentElement.classList.toggle("light", active === "light");
+    setIsThinkingOpen(window.innerWidth >= 1100);
   }, []);
 
   const handleToggleTheme = () => {
-    const nextTheme = theme === "dark" ? "light" : "dark";
-    setTheme(nextTheme);
-    localStorage.setItem("sovereign_theme", nextTheme);
-    document.documentElement.classList.toggle("light", nextTheme === "light");
+    const next = theme === "dark" ? "light" : "dark";
+    setTheme(next);
+    try {
+      localStorage.setItem("sovereign_theme", next);
+    } catch {
+      /* storage blocked */
+    }
+    document.documentElement.classList.toggle("light", next === "light");
   };
 
-  // Load documents and real query suggestions
-  const loadDocuments = async () => {
-    try {
-      const docs = await fetchDocuments();
-      setDocuments(docs);
-    } catch (err) {
-      console.warn("Could not fetch documents (backend may be offline):", err);
-    }
-  };
+  const loadDocuments = useCallback(async () => {
+    setDocuments(await fetchDocuments());
+  }, []);
 
   useEffect(() => {
     loadDocuments();
-    fetchDocumentSuggestions(selectedEntity).then((suggs) => {
-      if (suggs && suggs.length > 0) {
-        setSuggestions(suggs);
+    fetchDocumentSuggestions(selectedEntity).then((s) => s.length && setSuggestions(s));
+  }, [selectedEntity, loadDocuments]);
+
+  // ---------------------------------------------------------------- dashboards
+
+  /**
+   * Build a dashboard. `msgId` is the assistant message whose question/answer it charts; `question`
+   * overrides (a "chart X" request with its own topic). Speaks the result in voice mode.
+   */
+  const buildDashboard = useCallback(
+    async (opts: { msgId: string; question?: string; answer?: string; speak?: boolean; ack?: boolean }) => {
+      const list = messagesRef.current;
+      const idx = list.findIndex((m) => m.id === opts.msgId);
+      const msg = idx >= 0 ? list[idx] : null;
+      const remembered = dashboardSourceRef.current[opts.msgId];
+      const question =
+        opts.question ||
+        remembered?.question ||
+        [...list.slice(0, Math.max(0, idx))].reverse().find((m) => m.sender === "user")?.content ||
+        msg?.content ||
+        "";
+      if (!question) return;
+      const answer = opts.answer ?? remembered?.answer ?? msg?.content ?? "";
+      dashboardSourceRef.current[opts.msgId] = { question, answer };
+      const setAck = (content: string) =>
+        opts.ack && setMessages((prev) => prev.map((m) => (m.id === opts.msgId ? { ...m, content } : m)));
+      setDashboardStatus((prev) => ({ ...prev, [opts.msgId]: { state: "loading" } }));
+      try {
+        const d = await createDashboard({ question, answer, entityId: selectedEntity });
+        setAck(`Created dashboard **${d.title}** for: ${question}`);
+        setDashboards((prev) => [...prev.filter((x) => x.id !== d.id), d].slice(-8));
+        setActiveDashboardId(d.id);
+        setIsDashboardOpen(true);
+        setShowDashboardIn3D(true);
+        setDashboardStatus((prev) => ({ ...prev, [opts.msgId]: { state: "ready", dashboardId: d.id } }));
+        if (opts.speak) engineRef.current?.say(`Here is your dashboard: ${d.title}.`);
+      } catch (err: any) {
+        const message = err?.message || "Could not build a dashboard.";
+        setAck(`I couldn't build a dashboard for: ${question}`);
+        setDashboardStatus((prev) => ({ ...prev, [opts.msgId]: { state: "error", message } }));
+        if (opts.speak) engineRef.current?.say("Sorry, I couldn't build a dashboard for that.");
       }
+    },
+    [selectedEntity]
+  );
+
+  /** Last finished assistant answer (what "create a graph" refers to). */
+  const lastAnswer = useCallback(
+    () => [...messagesRef.current].reverse().find((m) => m.sender === "assistant" && !m.streaming && m.content) || null,
+    []
+  );
+
+  /** "Create a graph" / "chart AAPL volume in 2008" typed or spoken: build a dashboard instead of answering. */
+  const handleDashboardRequest = useCallback(
+    (text: string, mode: "text" | "voice") => {
+      const own = hasOwnTopic(text);
+      const previous = lastAnswer();
+      if (!own && !previous) return false; // nothing to chart yet - let the normal answer flow handle it
+      const ackId = `ast-${Date.now()}`;
+      ackIdsRef.current.add(ackId);
+      const subject = own ? text : (previous && [...messagesRef.current].reverse().find((m) => m.sender === "user")?.content) || text;
+      const ack: ChatMessage = {
+        id: ackId,
+        sender: "assistant",
+        content: `Building a dashboard for: **${subject}**`,
+        timestamp: now(),
+        mode,
+      };
+      const userMsg: ChatMessage = { id: `user-${Date.now()}`, sender: "user", content: text, timestamp: now(), mode };
+      messagesRef.current = [...messagesRef.current, userMsg, ack];
+      setMessages(messagesRef.current);
+      setIsDialogueOpen(true);
+      if (mode === "voice") engineRef.current?.beginResponse();
+      buildDashboard({
+        msgId: ackId,
+        question: own ? text : subject,
+        answer: own ? "" : previous?.content,
+        speak: mode === "voice",
+        ack: true,
+      });
+      return true;
+    },
+    [buildDashboard, lastAnswer]
+  );
+
+  // ---------------------------------------------------------------- querying
+
+  const runQuery = useCallback(
+    async (text: string, mode: "text" | "voice") => {
+      if (isDashboardRequest(text) && handleDashboardRequest(text, mode)) return;
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+      const engine = engineRef.current;
+      const speak = mode === "voice" && !!engine?.inConversation;
+
+      const history = buildHistory(messagesRef.current);
+      const astId = `ast-${Date.now()}`;
+      setMessages((prev) => [
+        ...prev.map((m) => (m.streaming ? { ...m, streaming: false } : m)),
+        { id: `user-${Date.now()}`, sender: "user", content: text, timestamp: now(), mode },
+        {
+          id: astId,
+          sender: "assistant",
+          content: "",
+          timestamp: now(),
+          streaming: true,
+          thinking_trace: [],
+          reasoning: "",
+          mode,
+        },
+      ]);
+      setIsProcessing(true);
+      setIsDialogueOpen(true);
+      startedAtRef.current = performance.now();
+      if (speak) engine!.beginResponse();
+
+      // Tokens arrive far faster than React should re-render; batch them every ~50ms.
+      const buf = { answer: "", reasoning: "", stages: [] as ThinkingStage[], sources: [] as CitationItem[] };
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const flush = () => {
+        timer = null;
+        const snapshot = { content: buf.answer, reasoning: buf.reasoning, thinking_trace: [...buf.stages], sources: buf.sources };
+        setMessages((prev) => prev.map((m) => (m.id === astId ? { ...m, ...snapshot } : m)));
+      };
+      const schedule = () => {
+        if (!timer) timer = setTimeout(flush, 50);
+      };
+
+      let final: Extract<StreamEvent, { type: "done" }> | null = null;
+      let failure: string | null = null;
+      try {
+        await streamQuery(
+          { question: text, entityId: selectedEntity, history, mode },
+          (ev) => {
+            switch (ev.type) {
+              case "stage": {
+                const stage: ThinkingStage = {
+                  id: ev.id,
+                  title: ev.title,
+                  status: ev.status,
+                  details: ev.detail,
+                  duration_ms: ev.duration_ms,
+                };
+                const i = buf.stages.findIndex((s) => s.id === ev.id);
+                if (i >= 0) buf.stages[i] = stage;
+                else buf.stages.push(stage);
+                break;
+              }
+              case "sources":
+                buf.sources = ev.citations;
+                break;
+              case "reasoning":
+                buf.reasoning += ev.delta;
+                break;
+              case "answer":
+                buf.answer += ev.delta;
+                if (speak) engine!.pushResponseText(ev.delta);
+                break;
+              case "done":
+                final = ev;
+                break;
+              case "error":
+                failure = ev.message;
+                break;
+            }
+            schedule();
+          },
+          controller.signal
+        );
+      } catch (err: any) {
+        if (err?.name !== "AbortError") failure = err?.message || "Could not reach the API. Is the backend running on port 8000?";
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+
+      const aborted = controller.signal.aborted;
+      const done = final as Extract<StreamEvent, { type: "done" }> | null;
+      setMessages((prev) => {
+        const next = prev.map((m) => {
+          if (m.id !== astId) return m;
+          if (done) {
+            return {
+              ...m,
+              content: done.answer,
+              reasoning: done.reasoning,
+              structured_data: done.structured_data,
+              thinking_trace: done.thinking_trace.map((s, i) => ({ ...s, id: buf.stages[i]?.id })),
+              citations: done.citations,
+              sources: buf.sources,
+              grounded: done.grounded,
+              total_latency_ms: done.total_latency_ms,
+              streaming: false,
+            };
+          }
+          return {
+            ...m,
+            content: buf.answer || (aborted ? "_Stopped._" : ""),
+            reasoning: buf.reasoning,
+            thinking_trace: buf.stages.map((s) => ({ ...s, status: "done" as const })),
+            sources: buf.sources,
+            streaming: false,
+          };
+        });
+        const cleaned = next.filter((m) => !(m.id === astId && !m.content));
+        return failure
+          ? [...cleaned, { id: `err-${Date.now()}`, sender: "system", content: failure, timestamp: now() }]
+          : cleaned;
+      });
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+        setIsProcessing(false);
+      }
+
+      if (speak && !aborted) {
+        if (failure) engine!.failResponse("Sorry, I couldn't get an answer just then. Please try again.");
+        else engine!.endResponse();
+      }
+    },
+    [selectedEntity, handleDashboardRequest]
+  );
+
+  const runQueryRef = useRef(runQuery);
+  runQueryRef.current = runQuery;
+
+  const handleSendMessage = useCallback((text: string) => {
+    engineRef.current?.stopSpeaking();
+    runQueryRef.current(text, "text");
+  }, []);
+
+  const handleStopGenerating = useCallback(() => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setIsProcessing(false);
+    engineRef.current?.stopSpeaking();
+  }, []);
+
+  // ---------------------------------------------------------------- voice
+
+  useEffect(() => {
+    const engine = new VoiceEngine({
+      onUtterance: (text) => runQueryRef.current(text, "voice"),
+      onInterrupt: () => {
+        abortRef.current?.abort();
+        abortRef.current = null;
+        setIsProcessing(false);
+      },
     });
-  }, [selectedEntity]);
-
-  // Audio Playback helper
-  const playAudioBase64 = (base64String: string) => {
-    try {
-      const audio = new Audio(`data:audio/mp3;base64,${base64String}`);
-      audio.play().catch((err) => console.error("Playback error:", err));
-    } catch (err) {
-      console.error("Audio initialization error:", err);
-    }
-  };
-
-  // Handle Text Queries
-  const handleSendMessage = async (text: string) => {
-    const userMsg: ChatMessage = {
-      id: `user-${Date.now()}`,
-      sender: "user",
-      content: text,
-      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+    engineRef.current = engine;
+    return () => {
+      engine.dispose();
+      engineRef.current = null;
     };
-
-    setMessages((prev) => [...prev, userMsg]);
-    setIsDialogueOpen(true);
-    setIsProcessing(true);
-    setStatusText("Retrieving local evidence & Pinecone coordinates...");
-
-    try {
-      const res = await queryAssistant(text, selectedEntity);
-      const assistantMsg: ChatMessage = {
-        id: `ast-${Date.now()}`,
-        sender: "assistant",
-        content: res.answer,
-        timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-        citations: res.citations,
-        grounded: res.grounded,
-      };
-      setMessages((prev) => [...prev, assistantMsg]);
-    } catch (err: any) {
-      const errorMsg: ChatMessage = {
-        id: `err-${Date.now()}`,
-        sender: "system",
-        content: `Error: ${err.message || "Failed to retrieve evidence."}`,
-        timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-      };
-      setMessages((prev) => [...prev, errorMsg]);
-    } finally {
-      setIsProcessing(false);
-      setStatusText("");
-    }
-  };
-
-  // Handle Spoken Audio Input
-  const handleAudioCaptured = async (audioBlob: Blob) => {
-    setIsProcessing(true);
-    setIsDialogueOpen(true);
-    setStatusText("Transcribing speech with local Whisper...");
-
-    try {
-      const res = await voiceAskAssistant(audioBlob, selectedEntity);
-
-      if (res.user_transcript) {
-        const userMsg: ChatMessage = {
-          id: `user-${Date.now()}`,
-          sender: "user",
-          content: res.user_transcript,
-          timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-        };
-        setMessages((prev) => [...prev, userMsg]);
-      }
-
-      const assistantMsg: ChatMessage = {
-        id: `ast-${Date.now()}`,
-        sender: "assistant",
-        content: res.answer,
-        timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-        citations: res.citations,
-        grounded: res.grounded,
-        audioBase64: res.audio_base64,
-      };
-
-      setMessages((prev) => [...prev, assistantMsg]);
-
-      if (res.audio_base64) {
-        playAudioBase64(res.audio_base64);
-      }
-    } catch (err: any) {
-      const errorMsg: ChatMessage = {
-        id: `err-${Date.now()}`,
-        sender: "system",
-        content: `Voice error: ${err.message || "Could not process audio."}`,
-        timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-      };
-      setMessages((prev) => [...prev, errorMsg]);
-    } finally {
-      setIsProcessing(false);
-      setStatusText("");
-    }
-  };
-
-  // Memoized listening state callback to prevent child unmount churn
-  const handleListeningStateChange = useCallback((listening: boolean, levels: number[]) => {
-    setIsListening(listening);
-    setAudioLevels(levels);
   }, []);
 
-  // Memoized renderer setup callback
-  const handleRendererReady = useCallback((renderer: THREE.WebGLRenderer) => {
-    rendererRef.current = renderer;
+  const toggleVoice = useCallback(() => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    if (!engine.inConversation) {
+      setIsDialogueOpen(true);
+      abortRef.current?.abort();
+    }
+    engine.toggleConversation();
   }, []);
 
-  // Handle clicking a 3D document slab in SpatialScene
-  const handle3DDocClick = useCallback((docTitle?: string, docRecord?: DocumentRecord) => {
-    if (docRecord) {
-      const isTable =
-        docRecord.original_name.endsWith(".xlsx") ||
-        docRecord.original_name.endsWith(".csv");
-      setSelectedCitation({
-        chunk_id: docRecord.file_hash,
-        document_id: docRecord.id,
-        document_name: docRecord.original_name,
-        page_number: 1,
-        is_table: isTable,
-        snippet: isTable
-          ? `[SOVEREIGN FINANCIAL LEDGER - ${docRecord.original_name}]\nTotal Rows: 11,558 | Currency: AUD ($)\nDate Horizon: 2020-04-01 to 2024-04-01\nRecord Sample:\nDATE        OPEN    HIGH    CLOSE   VOLUME\n2020-04-01  59.45   59.99   58.11   176,218,400\n2020-04-02  57.97   59.13   59.08   165,934,000\n2020-04-03  58.56   59.26   58.23   129,807,200\n2020-04-06  60.12   61.50   60.75   201,310,000\nIndexed locally in SQLite & Pinecone with Australian Privacy Principles (APP 8) zero-leakage compliance.`
-          : `Verified Australian financial evidence excerpt from ${docRecord.original_name} (${docRecord.total_pages} page(s), ${(docRecord.file_size / 1024).toFixed(1)} KB).\nStored strictly in local SQLite with APP 8 compliance. Indexed in Pinecone for role-filtered RAG queries.`,
-      });
-      return;
-    }
-    const matched = documents.find((d) => d.original_name === docTitle);
-    if (matched) {
-      const isTable =
-        matched.original_name.endsWith(".xlsx") ||
-        matched.original_name.endsWith(".csv");
-      setSelectedCitation({
-        chunk_id: matched.file_hash,
-        document_id: matched.id,
-        document_name: matched.original_name,
-        page_number: 1,
-        is_table: isTable,
-        snippet: isTable
-          ? `[SOVEREIGN FINANCIAL LEDGER - ${matched.original_name}]\nTotal Rows: 11,558 | Currency: AUD ($)\nDate Horizon: 2020-04-01 to 2024-04-01\nRecord Sample:\nDATE        OPEN    HIGH    CLOSE   VOLUME\n2020-04-01  59.45   59.99   58.11   176,218,400\n2020-04-02  57.97   59.13   59.08   165,934,000\n2020-04-03  58.56   59.26   58.23   129,807,200\n2020-04-06  60.12   61.50   60.75   201,310,000\nIndexed locally in SQLite & Pinecone with Australian Privacy Principles (APP 8) zero-leakage compliance.`
-          : `Verified Australian financial evidence excerpt from ${matched.original_name} (${matched.total_pages} page(s), ${(matched.file_size / 1024).toFixed(1)} KB).\nStored strictly in local SQLite with APP 8 compliance. Indexed in Pinecone for role-filtered RAG queries.`,
-      });
-      return;
-    }
-    const title = docTitle && typeof docTitle === "string" ? docTitle : "AAPL_financial_data_11558_rows.xlsx";
-    setSelectedCitation({
-      chunk_id: `chunk_${title.toLowerCase().replace(/[^a-z0-9]/g, "_")}`,
-      document_id: "doc_preview",
-      document_name: title,
-      page_number: 1,
-      is_table: title.endsWith(".xlsx") || title.endsWith(".csv"),
-      snippet: `Verified Australian financial evidence excerpt from ${title}. Grounded strictly in local SQLite storage with APP 8 compliance. All monetary figures synthesized in Australian Dollars (AUD $).`,
-    });
-  }, [documents]);
+  /** Orb tap (mouse or VR controller): start talking, interrupt the assistant, or end voice mode. */
+  const handleOrbTap = useCallback(() => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    const { conversation, phase } = voiceStore.get();
+    if (!conversation) return toggleVoice();
+    if (phase === "speaking") return engine.interrupt("orb");
+    engine.endConversation("orb");
+  }, [toggleVoice]);
 
+  const handleSpeakMessage = useCallback((msg: ChatMessage) => {
+    setSpeakingMessageId(msg.id);
+    engineRef.current?.speakText(msg.content);
+  }, []);
+
+  useEffect(() => {
+    if (!voice.readingAloud && voice.phase !== "speaking") setSpeakingMessageId(null);
+  }, [voice.readingAloud, voice.phase]);
+
+  // ---------------------------------------------------------------- 3D state feed
+
+  useEffect(() => {
+    const lastUser = [...messages].reverse().find((m) => m.sender === "user");
+    const lastAst = [...messages].reverse().find((m) => m.sender === "assistant");
+    const lastErr = messages.length && messages[messages.length - 1].sender === "system" ? messages[messages.length - 1] : null;
+    spatialStateRef.current = {
+      question: lastUser?.content || "",
+      answer: lastAst?.content || "",
+      streaming: !!lastAst?.streaming,
+      stages: lastAst?.thinking_trace || [],
+      reasoning: lastAst?.reasoning || "",
+      citations: (lastAst?.citations?.length ? lastAst.citations : lastAst?.sources) || [],
+      phase: voice.phase,
+      conversation: voice.conversation,
+      interim: voice.interim,
+      error: voice.error || lastErr?.content || null,
+      startedAt: startedAtRef.current,
+      dashboard: showDashboardIn3D ? dashboards.find((d) => d.id === activeDashboardId) || null : null,
+      dashboardState: !lastAst || lastAst.streaming || !lastAst.content
+        ? "none"
+        : (dashboardStatus[lastAst.id]?.state as SpatialState["dashboardState"]) || "available",
+      dashboardFocus,
+    };
+  }, [messages, voice, dashboards, activeDashboardId, dashboardStatus, showDashboardIn3D, dashboardFocus]);
+
+  const createDashboardForLast = useCallback(() => {
+    const last = lastAnswer();
+    if (last) buildDashboard({ msgId: last.id, speak: voiceStore.get().conversation });
+  }, [buildDashboard, lastAnswer]);
+
+  const lastAssistant = [...messages].reverse().find((m) => m.sender === "assistant") || null;
   const isLight = theme === "light";
 
   return (
     <div
-      className={`relative w-screen h-screen overflow-hidden select-none transition-colors duration-300 ${
+      className={`relative w-screen h-screen overflow-hidden transition-colors duration-300 ${
         isLight ? "bg-[#F5F5F7] text-[#1D1D1F]" : "bg-black text-[#F5F5F7]"
       }`}
     >
-      {/* 1. Hairline Regulatory Disclosure */}
       <RegulatoryBanner theme={theme} />
 
-      {/* 2. Apple visionOS Floating Navigation Capsule */}
       <Header
         selectedEntity={selectedEntity}
         onSelectEntity={setSelectedEntity}
@@ -248,87 +458,122 @@ export default function SovereignPavilionApp() {
         onOpenVrModal={() => setIsVrModalOpen(true)}
         activeView={activeView}
         onSelectView={setActiveView}
-        messageCount={messages.length}
-        onToggleDialogue={() => setIsDialogueOpen(!isDialogueOpen)}
+        messageCount={messages.filter((m) => m.sender !== "system").length}
+        onToggleDialogue={() => setIsDialogueOpen((v) => !v)}
         isDialogueOpen={isDialogueOpen}
         theme={theme}
         onToggleTheme={handleToggleTheme}
+        isThinkingOpen={isThinkingOpen}
+        onToggleThinking={() => setIsThinkingOpen((v) => !v)}
+        layoutLocked={layout.locked}
+        onToggleLayoutLock={() => layoutStore.toggleLocked()}
+        onResetLayout={() => {
+          layoutStore.resetAll();
+          spatialLayout.reset();
+        }}
       />
 
-      {/* 3. Main Stage: Spatial Studio Room OR Ledger Vault */}
       <main className="w-full h-full relative">
         {activeView === "spatial" ? (
-          /* Full Panoramic 3D Spatial Pavilion with Royal Purple Accents */
           <div className="w-full h-full absolute inset-0">
             <SpatialScene
-              onRendererReady={handleRendererReady}
-              onSelectDocument={handle3DDocClick}
-              onVoiceOrbClick={() => setIsDialogueOpen(true)}
+              onRendererReady={(r) => (rendererRef.current = r)}
+              onSelectDocument={(doc) => setSelectedCitation(docCitation(doc))}
+              onOrbTap={handleOrbTap}
+              onCreateDashboard={createDashboardForLast}
+              onCloseDashboard={() => setShowDashboardIn3D(false)}
               theme={theme}
               documents={documents}
-              isListening={isListening}
-              audioLevels={audioLevels}
-              isProcessing={isProcessing}
+              stateRef={spatialStateRef}
+              paused={isStereoOpen}
             />
           </div>
         ) : (
-          /* Executive Private Wealth Portfolio Ledger Table */
           <div className="w-full h-full overflow-y-auto">
             <LedgerView
               documents={documents}
               selectedEntity={selectedEntity}
               onOpenUpload={() => setIsDocDrawerOpen(true)}
-              onSelectDocument={(doc) => {
-                setSelectedCitation({
-                  chunk_id: doc.file_hash,
-                  document_id: doc.id,
-                  document_name: doc.original_name,
-                  page_number: 1,
-                  snippet: `Verified document: ${doc.original_name} (${doc.total_pages} pages, ${(doc.file_size / 1024).toFixed(1)} KB). Indexed with SHA-256 hash ${doc.file_hash}. Available for role-filtered retrieval.`,
-                });
-              }}
+              onSelectDocument={(doc) => setSelectedCitation(docCitation(doc))}
               theme={theme}
             />
           </div>
         )}
       </main>
 
-      {/* 4. Unified Aether Sovereign Command Capsule */}
       <AetherCommandBar
         onSendMessage={handleSendMessage}
-        onAudioCaptured={handleAudioCaptured}
+        onStopGenerating={handleStopGenerating}
         isProcessing={isProcessing}
-        statusText={statusText}
         hasMessages={messages.length > 0}
-        onToggleDialogue={() => setIsDialogueOpen(!isDialogueOpen)}
+        onToggleDialogue={() => setIsDialogueOpen((v) => !v)}
         isDialogueOpen={isDialogueOpen}
         theme={theme}
         prompts={suggestions}
-        onListeningStateChange={handleListeningStateChange}
+        onToggleVoice={toggleVoice}
+        onFinishUtterance={() => engineRef.current?.finishUtterance("button")}
+        onInterrupt={() => engineRef.current?.interrupt("button")}
+        onSetBargeIn={(on) => engineRef.current?.setBargeIn(on)}
+        onSetSttMode={(mode) => engineRef.current?.setSttMode(mode)}
+        onTestSpeaker={() => engineRef.current?.testSpeaker()}
       />
 
-      {/* 5. Floating Apple Intelligence Dialogue Glass Window */}
       <ChatHUD
         isOpen={isDialogueOpen}
         onClose={() => setIsDialogueOpen(false)}
         messages={messages}
         onSendMessage={handleSendMessage}
+        onStopGenerating={handleStopGenerating}
         onCitationClick={setSelectedCitation}
         isLoading={isProcessing}
-        onPlayAudio={playAudioBase64}
-        onClearMessages={() => setMessages([])}
+        onClearMessages={() => {
+          handleStopGenerating();
+          setMessages([]);
+        }}
         theme={theme}
-        onAudioCaptured={handleAudioCaptured}
+        onToggleVoice={toggleVoice}
+        onSpeakMessage={handleSpeakMessage}
+        onStopSpeaking={() => engineRef.current?.stopSpeaking("button")}
+        speakingMessageId={speakingMessageId}
+        onCreateDashboard={(msg) => buildDashboard({ msgId: msg.id, ack: ackIdsRef.current.has(msg.id) })}
+        onOpenDashboard={(id) => {
+          setActiveDashboardId(id);
+          setIsDashboardOpen(true);
+        }}
+        dashboardStatus={dashboardStatus}
       />
 
-      {/* 6. Provenance Inspector Modal */}
-      <CitationInspector
-        citation={selectedCitation}
-        onClose={() => setSelectedCitation(null)}
+      <DashboardPanel
+        isOpen={isDashboardOpen}
+        dashboards={dashboards}
+        activeId={activeDashboardId}
+        onSelect={setActiveDashboardId}
+        onRemove={(id) => {
+          setDashboards((prev) => {
+            const next = prev.filter((d) => d.id !== id);
+            if (activeDashboardId === id) setActiveDashboardId(next.length ? next[next.length - 1].id : null);
+            if (!next.length) setIsDashboardOpen(false);
+            return next;
+          });
+        }}
+        onClose={() => setIsDashboardOpen(false)}
+        onViewIn3D={() => {
+          if (activeView !== "spatial") setActiveView("spatial");
+          setShowDashboardIn3D(true);
+          setDashboardFocus((n) => n + 1);
+        }}
         theme={theme}
       />
 
-      {/* 7. Document Deposit Drawer */}
+      <ThinkingPanel
+        isOpen={isThinkingOpen}
+        onClose={() => setIsThinkingOpen(false)}
+        message={lastAssistant}
+        theme={theme}
+      />
+
+      <CitationInspector citation={selectedCitation} onClose={() => setSelectedCitation(null)} theme={theme} />
+
       <DocumentDrawer
         isOpen={isDocDrawerOpen}
         onClose={() => setIsDocDrawerOpen(false)}
@@ -338,14 +583,15 @@ export default function SovereignPavilionApp() {
         theme={theme}
       />
 
-      {/* 8. "VIEW IN VR" Launcher Modal */}
       <VrLaunchModal
         isOpen={isVrModalOpen}
         onClose={() => setIsVrModalOpen(false)}
         onEnterWebXr={() => {
+          if (activeView !== "spatial") setActiveView("spatial");
           if (rendererRef.current) {
             enterImmersiveVr(rendererRef.current).catch((err) => {
               console.warn("Immersive VR launch failed:", err);
+              alert(`Could not start immersive VR: ${err.message}`);
             });
           }
         }}
@@ -353,13 +599,15 @@ export default function SovereignPavilionApp() {
         theme={theme}
       />
 
-      {/* 9. Mobile Cardboard Stereoscopic Viewer */}
       <StereoViewer
         isOpen={isStereoOpen}
         onClose={() => setIsStereoOpen(false)}
         documents={documents}
-        isListening={isListening}
-        audioLevels={audioLevels}
+        stateRef={spatialStateRef}
+        onOrbTap={handleOrbTap}
+        onSelectDocument={(doc) => setSelectedCitation(docCitation(doc))}
+        onCreateDashboard={createDashboardForLast}
+        onCloseDashboard={() => setShowDashboardIn3D(false)}
       />
     </div>
   );
