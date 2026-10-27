@@ -379,11 +379,31 @@ export default function SovereignPavilionApp() {
       },
     });
     engineRef.current = engine;
+
+    // Start always-on microphone in standby mode (passively listening for "Hey Aether" / "Hi Aether")
+    engine.startStandby().catch(() => {});
+
+    // Ensure audio context and permissions unlock on first user click or keypress
+    const onUserGesture = () => {
+      engine.unlockAudio();
+    };
+    window.addEventListener("pointerdown", onUserGesture, { once: true });
+    window.addEventListener("keydown", onUserGesture, { once: true });
+
     return () => {
+      window.removeEventListener("pointerdown", onUserGesture);
+      window.removeEventListener("keydown", onUserGesture);
       engine.dispose();
       engineRef.current = null;
     };
   }, []);
+
+  // When Aether is awakened by name or conversation starts, reveal the dialogue HUD
+  useEffect(() => {
+    if (voice.wakeWordDetected) {
+      setIsDialogueOpen(true);
+    }
+  }, [voice.wakeWordDetected]);
 
   const toggleVoice = useCallback(() => {
     const engine = engineRef.current;

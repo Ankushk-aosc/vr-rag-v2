@@ -20,6 +20,7 @@ import { AdaptiveVad, rmsOf } from "../vad";
 import { liveLevels, voiceStore } from "./voiceStore";
 import { SentenceChunker, toSpeakable } from "./speechText";
 import { vlog } from "./voiceLog";
+import { matchWakeWord, playWakeChime, stripWakeWord } from "./wakeWord";
 
 export interface VoiceEngineHandlers {
   /** A finished user utterance. The page should run the query and feed the answer back. */
@@ -57,6 +58,7 @@ interface QueuedSpeech {
 interface StoredSettings {
   bargeIn?: boolean;
   sttMode?: "auto" | "server";
+  wakeWordEnabled?: boolean;
 }
 
 function readSettings(): StoredSettings {
@@ -99,6 +101,9 @@ export class VoiceEngine {
   private listenStartedAt = 0;
   private heardSpeech = false;
   private finishing = false;
+  private standby = false;
+  private wakeWordTriggered = false;
+  private wakeWordTimeout: ReturnType<typeof setTimeout> | null = null;
 
   // speaking state
   private queue: QueuedSpeech[] = [];
@@ -128,6 +133,7 @@ export class VoiceEngine {
       voiceStore.set({
         bargeIn: this.settingsExplicit.bargeIn ?? false,
         sttMode: this.settingsExplicit.sttMode ?? "auto",
+        wakeWordEnabled: this.settingsExplicit.wakeWordEnabled ?? true,
       });
     }
   }
@@ -138,6 +144,14 @@ export class VoiceEngine {
 
   get inConversation() {
     return voiceStore.get().conversation;
+  }
+
+  get isStandby() {
+    return this.standby;
+  }
+
+  get wakeWordEnabled() {
+    return voiceStore.get().wakeWordEnabled;
   }
 
   // ------------------------------------------------------------------ settings
@@ -155,6 +169,22 @@ export class VoiceEngine {
     this.recognitionFailed = false;
     voiceStore.set({ sttMode: mode });
     vlog("setting", { sttMode: mode });
+  }
+
+  setWakeWordEnabled(on: boolean) {
+    this.settingsExplicit = { ...this.settingsExplicit, wakeWordEnabled: on };
+    writeSettings(this.settingsExplicit);
+    voiceStore.set({ wakeWordEnabled: on });
+    vlog("setting", { wakeWordEnabled: on });
+    if (on) {
+      if (!this.inConversation && !this.standby) {
+        this.startStandby().catch(() => {});
+      }
+    } else {
+      if (this.standby && !this.inConversation) {
+        this.endConversation("wake-word-disabled", true);
+      }
+    }
   }
 
   /**
@@ -177,10 +207,46 @@ export class VoiceEngine {
 
   // ------------------------------------------------------------------ lifecycle
 
-  /** Start a hands-free conversation. Must be called from a user gesture (click / XR select). */
+  /**
+   * Always-on standby microphone mode.
+   * Keeps the mic open and listens passively for the wake word ("Hey Aether", "Hi Aether", etc.).
+   * Activates only when called by name.
+   */
+  async startStandby(): Promise<void> {
+    if (this.inConversation) return;
+    vlog("standby-start", { sttMode: voiceStore.get().sttMode });
+    this.standby = true;
+    this.recognitionFailed = false;
+    voiceStore.set({ standby: true, phase: "idle", error: null });
+
+    // 1. Immediately start passive SpeechRecognition in standby mode
+    this.listenStandby();
+
+    // 2. Also prepare microphone stream & AudioContext if browser already granted permission
+    try {
+      await this.ensureMic();
+      this.detectHeadphones();
+    } catch (err: any) {
+      vlog("standby-audio-deferred", { message: String(err?.message || err).slice(0, 160) });
+    }
+  }
+
+  /** Unlock suspended AudioContext upon user gesture. */
+  async unlockAudio(): Promise<void> {
+    try {
+      if (this.ctx && this.ctx.state === "suspended") {
+        await this.ctx.resume();
+      }
+    } catch {}
+  }
+
+  /** Start a hands-free conversation immediately (e.g. user clicked mic / tapped orb). */
   async startConversation(): Promise<void> {
     if (this.inConversation) return;
-    voiceStore.set({ conversation: true, error: null, interim: "" });
+    this.standby = false;
+    this.recognitionFailed = false;
+    this.setPhase("listening");
+    voiceStore.set({ conversation: true, standby: false, phase: "listening", error: null, interim: "" });
     vlog("conversation-start", { sttMode: voiceStore.get().sttMode, hasRecognition: !!getRecognitionCtor() });
     try {
       await this.ensureMic();
@@ -195,27 +261,61 @@ export class VoiceEngine {
           : `Microphone unavailable: ${err?.message || err}`;
       vlog("mic-error", { name: err?.name, message: String(err?.message || err).slice(0, 160) });
       voiceStore.set({ error: msg });
-      this.endConversation("mic-error");
+      this.endConversation("mic-error", true);
     }
   }
 
-  /** Stop everything: mic, recognition, playback. */
-  endConversation(reason = "user"): void {
+  /**
+   * Called when user awakened Aether by name ("Hey Aether" or "Hi Aether") without an inline query.
+   * Transitions immediately to active listening.
+   */
+  startConversationFromWake(): void {
+    this.standby = false;
+    this.setPhase("listening");
+    voiceStore.set({ conversation: true, standby: false, phase: "listening", interim: "", error: null });
+    this.finalText = "";
+    this.interimText = "";
+    this.lastResultAt = performance.now();
+    this.listenStartedAt = performance.now();
+    this.heardSpeech = false;
+    this.ensureMic().then(() => this.startRecorder()).catch(() => {});
+  }
+
+  /**
+   * Stop active conversation. If wake-word is enabled, seamlessly returns to standby
+   * always-on listening rather than completely closing the mic stream.
+   */
+  endConversation(reason = "user", forceStop = false): void {
     if (this.inConversation) vlog("conversation-end", { reason });
-    voiceStore.set({ conversation: false, interim: "" });
+    if (this.wakeWordTimeout) {
+      clearTimeout(this.wakeWordTimeout);
+      this.wakeWordTimeout = null;
+    }
+    voiceStore.set({ conversation: false, interim: "", wakeWordDetected: false });
     this.stopListening(true);
     this.stopSpeaking("conversation-end");
+
+    if (this.wakeWordEnabled && !forceStop) {
+      this.listenStandby();
+      return;
+    }
+
+    this.standby = false;
+    voiceStore.set({ standby: false, phase: "idle" });
     this.releaseMic();
-    voiceStore.set({ phase: "idle" });
     this.stopTickingIfIdle();
   }
 
   toggleConversation(): Promise<void> | void {
-    return this.inConversation ? this.endConversation("toggle") : this.startConversation();
+    if (this.inConversation) {
+      return this.endConversation("toggle");
+    }
+    return this.startConversation();
   }
 
   dispose(): void {
-    this.endConversation("dispose");
+    if (this.wakeWordTimeout) clearTimeout(this.wakeWordTimeout);
+    this.endConversation("dispose", true);
     if (this.ctx && this.ctx.state !== "closed") this.ctx.close().catch(() => {});
     this.ctx = null;
   }
@@ -242,10 +342,14 @@ export class VoiceEngine {
       );
     }
     const ctx = await this.ensureAudioContext();
-    if (this.stream && this.stream.getAudioTracks().some((t) => t.readyState === "live")) return;
-    this.stream = await navigator.mediaDevices.getUserMedia({
+    const stream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
     });
+    if (!this.ctx || this.ctx.state === "closed" || ctx.state === "closed") {
+      stream.getTracks().forEach((t) => t.stop());
+      return;
+    }
+    this.stream = stream;
     // keep a reference to the source node: an unreferenced node can be garbage-collected
     this.micSource = ctx.createMediaStreamSource(this.stream);
     this.micAnalyser = ctx.createAnalyser();
@@ -324,12 +428,12 @@ export class VoiceEngine {
         recognition: !!this.recognition,
         recorder: this.recorder?.state,
         words: `${this.finalText} ${this.interimText}`.trim(),
-        audible: this.audible,
         echo: +this.echoEnvelope.toFixed(3),
       };
     }
 
-    if (phase === "listening" && !this.finishing) {
+    const isListeningTurn = phase === "listening" && !this.finishing;
+    if (isListeningTurn) {
       if (frame.inUtterance) this.heardSpeech = true;
       const sinceListen = now - this.listenStartedAt;
       const haveWords = (this.finalText + this.interimText).trim().length > 0;
@@ -338,14 +442,21 @@ export class VoiceEngine {
       const pendingInterim = this.interimText.length > 0 && resultQuiet < 700;
 
       // 1. The VAD heard a complete utterance followed by silence - works for every STT backend.
-      if (frame.endOfUtterance && !pendingInterim) this.finishUtterance("vad-silence");
+      if (frame.endOfUtterance && !pendingInterim && (haveWords || this.heardSpeech)) {
+        this.finishUtterance("vad-silence");
+      }
       // 2. The recogniser has words and has been quiet for a while, even if the VAD still hears
       //    noise (fan, AGC-boosted room) - the recogniser is the better judge of speech.
-      else if (haveWords && resultQuiet >= RECOGNISER_QUIET_MS && (!frame.voiced || resultQuiet >= 2600))
+      else if (haveWords && resultQuiet >= RECOGNISER_QUIET_MS && (!frame.voiced || resultQuiet >= 2600)) {
         this.finishUtterance("recogniser-quiet");
+      }
       // 3. Safety limits.
-      else if (sinceListen > MAX_UTTERANCE_MS && (haveWords || this.heardSpeech)) this.finishUtterance("max-length");
-      else if (!this.heardSpeech && !haveWords && sinceListen > NO_SPEECH_RESTART_MS) this.restartListening();
+      else if (sinceListen > MAX_UTTERANCE_MS && (haveWords || this.heardSpeech)) {
+        this.finishUtterance("max-length");
+      }
+      else if (!this.heardSpeech && !haveWords && sinceListen > NO_SPEECH_RESTART_MS) {
+        this.restartListening();
+      }
     }
 
     // Barge-in: only while the assistant's (measurable) audio is playing, and only when the mic is
@@ -377,24 +488,52 @@ export class VoiceEngine {
 
   // ------------------------------------------------------------------ listening
 
-  private listen(): void {
-    if (!this.inConversation) return;
-    this.stopListening(true);
+  /**
+   * Passive standby listening loop.
+   * Keeps the mic open and runs speech recognition to detect the wake word.
+   */
+  listenStandby(): void {
     this.vad.reset();
     this.finalText = "";
     this.interimText = "";
     this.lastResultAt = 0;
     this.heardSpeech = false;
     this.finishing = false;
+    this.wakeWordTriggered = false;
+    this.standby = true;
     this.listenStartedAt = performance.now();
-    voiceStore.set({ interim: "" });
+    this.setPhase("idle");
+    voiceStore.set({ standby: true, conversation: false, interim: "", phase: "idle" });
+
+    // Standby mode only needs SpeechRecognition to detect the wake word.
+    // If recognition is already active, keep it running smoothly.
+    if (!this.recognition) {
+      const allowBrowser = voiceStore.get().sttMode === "auto";
+      const Ctor = allowBrowser ? getRecognitionCtor() : null;
+      if (Ctor) this.startRecognition(Ctor);
+    }
+    voiceStore.set({ sttEngine: this.recognition ? "browser" : "server" });
+  }
+
+  private listen(): void {
+    if (!this.inConversation) return;
+    this.standby = false;
+    this.vad.reset();
+    this.finalText = "";
+    this.interimText = "";
+    this.lastResultAt = 0;
+    this.heardSpeech = false;
+    this.finishing = false;
+    this.wakeWordTriggered = false;
+    this.listenStartedAt = performance.now();
+    voiceStore.set({ interim: "", standby: false });
     this.setPhase("listening");
 
     // Always record: if the browser recogniser returns nothing the recording goes to Whisper.
     this.startRecorder();
     const allowBrowser = voiceStore.get().sttMode === "auto" && !this.recognitionFailed;
     const Ctor = allowBrowser ? getRecognitionCtor() : null;
-    if (Ctor) this.startRecognition(Ctor);
+    if (Ctor && !this.recognition) this.startRecognition(Ctor);
     voiceStore.set({ sttEngine: this.recognition ? "browser" : "server" });
   }
 
@@ -407,24 +546,123 @@ export class VoiceEngine {
       const rec = new Ctor();
       rec.continuous = true;
       rec.interimResults = true;
-      rec.lang = "en-AU";
+      rec.lang = (typeof navigator !== "undefined" && navigator.language) || "en-US";
       rec.maxAlternatives = 1;
       rec.onresult = (event: any) => {
         let interim = "";
         for (let i = event.resultIndex; i < event.results.length; i++) {
           const piece = event.results[i][0].transcript;
-          if (event.results[i].isFinal) this.finalText = `${this.finalText} ${piece}`.trim();
-          else interim += piece;
+          if (event.results[i].isFinal) {
+            if (this.standby && !this.inConversation) {
+              // In standby mode, keep only the latest speech segment
+              this.finalText = piece.trim();
+            } else {
+              this.finalText = `${this.finalText} ${piece}`.trim();
+            }
+          } else {
+            interim += piece;
+          }
         }
         this.interimText = interim.trim();
         this.lastResultAt = performance.now();
-        voiceStore.set({ interim: `${this.finalText} ${this.interimText}`.trim() });
+        const full = `${this.finalText} ${this.interimText}`.trim();
+
+        if (full) {
+          console.log("[Aether Voice Heard]:", full);
+        }
+
+        // 1. Passive Standby Mode: Looking for wake word ("Hey Aether", "Hey e", "he ET", "Hi", etc.)
+        if (this.standby && !this.inConversation) {
+          const match = matchWakeWord(full).matched
+            ? matchWakeWord(full)
+            : matchWakeWord(this.interimText);
+          if (match.matched) {
+            console.log("[Aether Wake Word Activated!]:", match.wakePhrase, match.query ? `(query: ${match.query})` : "");
+            vlog("wake-word-detected", { phrase: match.wakePhrase, query: match.query });
+
+            // Activate immediately!
+            this.standby = false;
+            this.wakeWordTriggered = true;
+            this.setPhase("listening");
+            voiceStore.set({ wakeWordDetected: true, conversation: true, standby: false, phase: "listening", error: null });
+
+            // Play the activation chime
+            this.ensureAudioContext()
+              .then((ctx) => playWakeChime(ctx))
+              .catch(() => {});
+
+            // Prepare recorder and audio analysis
+            this.ensureMic().then(() => this.startRecorder()).catch(() => {});
+
+            if (this.wakeWordTimeout) clearTimeout(this.wakeWordTimeout);
+            this.wakeWordTimeout = setTimeout(() => {
+              voiceStore.set({ wakeWordDetected: false });
+            }, 2500);
+
+            // If user already included their query with the wake word:
+            if (match.query && match.query.length >= 2) {
+              voiceStore.set({ interim: match.query });
+              this.stopListening(true);
+              this.deliver(match.query, this.generation);
+              return;
+            }
+
+            // User said wake word alone ("Hey Aether" or "Hi Aether"):
+            // Reset transcript buffers so upcoming query is clean, but KEEP recognition active!
+            this.finalText = "";
+            this.interimText = "";
+            this.lastResultAt = performance.now();
+            this.listenStartedAt = performance.now();
+            this.heardSpeech = false;
+            return;
+          }
+          return;
+        }
+
+        // 2. While Speaking: Allow user to interrupt using wake word or greeting
+        if (this.phase === "speaking") {
+          const match = matchWakeWord(full).matched
+            ? matchWakeWord(full)
+            : matchWakeWord(this.interimText);
+          if (match.matched) {
+            console.log("[Aether Interrupted by Wake Word!]:", match.wakePhrase, match.query ? `(query: ${match.query})` : "");
+            this.interrupt("wake-word");
+            this.ensureAudioContext().then((ctx) => playWakeChime(ctx)).catch(() => {});
+            this.finalText = "";
+            this.interimText = "";
+            this.lastResultAt = performance.now();
+            this.listenStartedAt = performance.now();
+            this.heardSpeech = false;
+            if (match.query && match.query.length >= 2) {
+              voiceStore.set({ interim: match.query });
+              this.stopListening(true);
+              this.deliver(match.query, this.generation);
+            }
+            return;
+          }
+        }
+
+        // 3. Active Mode: Clean any wake word prefix so the query to the AI is pure
+        const clean = stripWakeWord(full);
+        voiceStore.set({ interim: clean });
       };
       rec.onerror = (e: any) => {
         if (e.error === "no-speech" || e.error === "aborted") return;
         vlog("recogniser-error", { error: e.error });
-        // network / not-allowed / service-not-allowed / audio-capture: the recorder keeps running,
-        // so this turn (and later ones) are transcribed by Whisper on the API
+        console.warn("[Aether Voice] Speech recognition error:", e.error);
+
+        // In standby or wake-word mode, never permanently disable speech recognition!
+        if (this.standby || voiceStore.get().wakeWordEnabled) {
+          setTimeout(() => {
+            if (this.standby && !this.inConversation && !this.finishing) {
+              if (this.recognition === rec) this.recognition = null;
+              const Ctor = getRecognitionCtor();
+              if (Ctor) this.startRecognition(Ctor);
+            }
+          }, 1000);
+          return;
+        }
+
         this.recognitionFailed = true;
         if (this.recognition === rec) {
           this.recognition = null;
@@ -432,20 +670,29 @@ export class VoiceEngine {
         }
       };
       rec.onend = () => {
-        // Chrome ends sessions on its own after long pauses; keep listening while it's our turn
-        if (this.recognition === rec && this.phase === "listening" && !this.finishing) {
-          try {
-            rec.start();
-          } catch {
-            /* already restarting */
-          }
+        // Keep listening while in conversation or standby
+        if (this.recognition === rec && (this.phase === "listening" || this.standby) && !this.finishing) {
+          setTimeout(() => {
+            if ((this.phase === "listening" || this.standby) && !this.finishing) {
+              try {
+                rec.start();
+              } catch {
+                if (this.recognition === rec) {
+                  this.recognition = null;
+                  const Ctor = getRecognitionCtor();
+                  if (Ctor) this.startRecognition(Ctor);
+                }
+              }
+            }
+          }, 150);
         }
       };
       rec.start();
       this.recognition = rec;
     } catch (err) {
       vlog("recogniser-error", { error: String(err).slice(0, 120) });
-      this.recognitionFailed = true;
+      console.warn("[Aether Voice] Recognition start error:", err);
+      if (!this.standby) this.recognitionFailed = true;
     }
   }
 
@@ -490,16 +737,52 @@ export class VoiceEngine {
 
   /** Ends the user's turn immediately (also used by the "send now" button). */
   finishUtterance(reason = "button"): void {
-    if (this.phase !== "listening" || this.finishing) return;
+    if ((this.phase !== "listening" && !this.standby) || this.finishing) return;
     this.finishing = true;
     const gen = this.generation;
 
-    // Browser recognition produced words: use them immediately (no upload, no extra latency)
-    const browserText = `${this.finalText} ${this.interimText}`.trim();
-    if (browserText) {
-      vlog("turn-end", { reason, stt: "browser", text: browserText.slice(0, 80) });
+    const rawText = `${this.finalText} ${this.interimText}`.trim();
+
+    // Standby mode handling:
+    if (this.standby && !this.inConversation) {
+      const match = matchWakeWord(rawText);
+      if (!match.matched && !this.wakeWordTriggered) {
+        // Unrelated speech during standby without wake word:
+        // Quietly reset and continue standby listening
+        this.finishing = false;
+        this.stopListening(true);
+        this.listenStandby();
+        return;
+      }
+
+      // Wake word detected!
+      const query = match.matched ? match.query : stripWakeWord(rawText);
+      if (query.length >= 2) {
+        // User asked their query with the wake word: "Hey Aether, tell me about revenue"
+        vlog("turn-end", { reason, stt: "browser-wake", text: query.slice(0, 80) });
+        this.standby = false;
+        voiceStore.set({ conversation: true, standby: false });
+        this.stopListening(true);
+        this.deliver(query, gen);
+        return;
+      } else {
+        // User only called the name: "Hey Aether" or "Hi Aether"
+        // Activate conversation and start listening for their question!
+        vlog("wake-word-ready", { reason, wakePhrase: match.wakePhrase });
+        this.standby = false;
+        this.finishing = false;
+        this.stopListening(true);
+        this.startConversationFromWake();
+        return;
+      }
+    }
+
+    // Active conversation mode:
+    const cleanText = stripWakeWord(rawText);
+    if (cleanText) {
+      vlog("turn-end", { reason, stt: "browser", text: cleanText.slice(0, 80) });
       this.stopListening(true);
-      this.deliver(browserText, gen);
+      this.deliver(cleanText, gen);
       return;
     }
     if (this.recognition && this.heardSpeech) {
@@ -727,14 +1010,24 @@ export class VoiceEngine {
     if (gen !== this.generation) return;
 
     if (buffer && this.ctx && this.outGain) {
+      if (this.ctx.state === "suspended") {
+        await this.ctx.resume().catch(() => {});
+      }
       const src = this.ctx.createBufferSource();
       src.buffer = buffer;
       src.connect(this.outGain);
       this.currentSource = src;
-      src.onended = () => {
+      let finished = false;
+      const onDone = () => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(watchdog);
         if (this.currentSource === src) this.currentSource = null;
         this.playNext(gen);
       };
+      src.onended = onDone;
+      const maxMs = Math.max(1000, buffer.duration * 1000 + 1200);
+      const watchdog = setTimeout(onDone, maxMs);
       src.start();
       this.markAudible();
     } else {
@@ -748,17 +1041,25 @@ export class VoiceEngine {
       const synth = typeof window !== "undefined" ? window.speechSynthesis : null;
       if (!synth || gen !== this.generation) return resolve();
       const utter = new SpeechSynthesisUtterance(text);
+      if (typeof window !== "undefined") (window as any).__aetherUtterance = utter;
       const voices = synth.getVoices();
       utter.voice =
         voices.find((v) => v.lang === "en-AU") || voices.find((v) => v.lang.startsWith("en")) || null;
       utter.rate = 1.03;
+      let doneCalled = false;
+      const done = () => {
+        if (doneCalled) return;
+        doneCalled = true;
+        clearTimeout(watchdog);
+        this.syntheticLevelUntil = 0;
+        resolve();
+      };
+      const maxMs = Math.max(2000, text.length * 90 + 2500);
+      const watchdog = setTimeout(done, maxMs);
+
       utter.onstart = () => {
         this.syntheticLevelUntil = performance.now() + 60000;
         if (gen === this.generation) this.markAudible();
-      };
-      const done = () => {
-        this.syntheticLevelUntil = 0;
-        resolve();
       };
       utter.onend = done;
       utter.onerror = done;
@@ -770,14 +1071,10 @@ export class VoiceEngine {
   private maybeFinishSpeaking(): void {
     if (this.playing || this.queue.length || this.responseOpen) return;
     this.audible = false;
+    this.currentSource = null;
     voiceStore.set({ readingAloud: false });
-    if (this.inConversation) {
-      // hand the turn back to the user, like ChatGPT / Claude voice mode
-      this.listen();
-    } else {
-      this.setPhase("idle");
-      this.stopTickingIfIdle();
-    }
+    console.log("[Aether Finished Speaking -> Returning to Standby]");
+    this.listenStandby();
   }
 
   /** The answer failed; say so briefly and go back to listening. */

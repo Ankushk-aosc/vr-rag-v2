@@ -15,6 +15,12 @@ export interface VoiceSnapshot {
   bargeIn: boolean;
   /** Which speech-to-text to use: browser recogniser with Whisper fallback, or Whisper only. */
   sttMode: "auto" | "server";
+  /** Always-on microphone listening passively for wake word ("Hey Aether" / "Hi Aether"). */
+  wakeWordEnabled: boolean;
+  /** True when the microphone is active in passive standby waiting for wake word. */
+  standby: boolean;
+  /** True briefly when "Hey Aether" or "Hi Aether" has just been heard. */
+  wakeWordDetected: boolean;
 }
 
 const initial: VoiceSnapshot = {
@@ -26,6 +32,9 @@ const initial: VoiceSnapshot = {
   readingAloud: false,
   bargeIn: false,
   sttMode: "auto",
+  wakeWordEnabled: true,
+  standby: false,
+  wakeWordDetected: false,
 };
 
 let snapshot: VoiceSnapshot = initial;
