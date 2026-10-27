@@ -9,9 +9,12 @@ import {
   Box,
   Sun,
   Moon,
-  ShieldCheck,
-  ChevronDown,
+  Brain,
+  Lock,
+  Unlock,
+  LayoutGrid,
 } from "lucide-react";
+import { FloatingPanel } from "./FloatingPanel";
 
 interface HeaderProps {
   selectedEntity?: string;
@@ -25,6 +28,11 @@ interface HeaderProps {
   isDialogueOpen: boolean;
   theme: "dark" | "light";
   onToggleTheme: () => void;
+  isThinkingOpen: boolean;
+  onToggleThinking: () => void;
+  layoutLocked: boolean;
+  onToggleLayoutLock: () => void;
+  onResetLayout: () => void;
 }
 
 export function Header({
@@ -39,6 +47,11 @@ export function Header({
   isDialogueOpen,
   theme,
   onToggleTheme,
+  isThinkingOpen,
+  onToggleThinking,
+  layoutLocked,
+  onToggleLayoutLock,
+  onResetLayout,
 }: HeaderProps) {
   const [webxrAvailable, setWebxrAvailable] = useState<boolean | null>(null);
 
@@ -57,12 +70,26 @@ export function Header({
   const isLight = theme === "light";
 
   return (
-    <header className="fixed top-12 left-1/2 -translate-x-1/2 z-40 w-full max-w-5xl px-4 transition-all">
+    <FloatingPanel
+      id="header"
+      theme={theme}
+      resize="x"
+      showGrip
+      minW={360}
+      minH={52}
+      ariaLabel="Navigation"
+      defaultRect={(vw) => {
+        const w = Math.min(1024, vw - 32);
+        return { x: (vw - w) / 2, y: 44, w, h: 56 };
+      }}
+    >
+    <header className="w-full">
       <div
-        className={`apple-glass rounded-full px-4 sm:px-6 py-2.5 flex items-center justify-between border shadow-2xl backdrop-blur-2xl transition-all ${
+        data-drag-handle
+        className={`rounded-full px-4 sm:px-5 py-2.5 flex items-center justify-between border shadow-xl transition-colors ${
           isLight
-            ? "border-black/10 bg-white/85 text-black shadow-lg"
-            : "border-white/10 bg-[#141418]/80 text-white"
+            ? "border-black/10 bg-white text-black"
+            : "border-white/10 bg-[#141418] text-white"
         }`}
       >
         {/* Brand Seal & Entity */}
@@ -135,7 +162,48 @@ export function Header({
         </div>
 
         {/* Right Actions & Theme Switch */}
-        <div className="flex items-center space-x-2">
+        <div className="flex items-center space-x-1.5 sm:space-x-2">
+          {/* Live reasoning window */}
+          <button
+            onClick={onToggleThinking}
+            title={isThinkingOpen ? "Hide reasoning window" : "Show reasoning window"}
+            className={`hidden md:flex items-center space-x-1.5 px-3 py-1.5 rounded-full border text-xs font-medium transition-all ${
+              isThinkingOpen
+                ? isLight
+                  ? "bg-[#6D28D9]/15 text-[#6D28D9] border-[#6D28D9]/40"
+                  : "bg-[#7C3AED]/20 text-[#A78BFA] border-[#7C3AED]/50"
+                : isLight
+                ? "bg-black/5 hover:bg-black/10 text-black/80 border-black/10"
+                : "bg-white/5 hover:bg-white/10 text-white/80 border-white/10"
+            }`}
+          >
+            <Brain className="w-3.5 h-3.5" />
+            <span className="hidden lg:inline">Reasoning</span>
+          </button>
+
+          {/* Layout: lock / reset every movable panel (2D and 3D) */}
+          <div
+            className={`flex items-center rounded-full border ${
+              isLight ? "border-black/10 bg-black/5" : "border-white/10 bg-white/5"
+            }`}
+          >
+            <button
+              onClick={onToggleLayoutLock}
+              title={layoutLocked ? "Unlock layout (allow moving panels)" : "Lock layout (prevent accidental moves)"}
+              className={`p-2 rounded-full transition-all ${
+                layoutLocked ? "text-[#D4AF37]" : isLight ? "text-black/60 hover:text-black" : "text-white/60 hover:text-white"
+              }`}
+            >
+              {layoutLocked ? <Lock className="w-3.5 h-3.5" /> : <Unlock className="w-3.5 h-3.5" />}
+            </button>
+            <button
+              onClick={onResetLayout}
+              title="Reset all panel positions (2D and 3D)"
+              className={`p-2 rounded-full transition-all ${isLight ? "text-black/60 hover:text-black" : "text-white/60 hover:text-white"}`}
+            >
+              <LayoutGrid className="w-3.5 h-3.5" />
+            </button>
+          </div>
 
           {/* Dialogue Toggle Button */}
           <button
@@ -198,5 +266,6 @@ export function Header({
         </div>
       </div>
     </header>
+    </FloatingPanel>
   );
 }

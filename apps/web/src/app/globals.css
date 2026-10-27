@@ -107,3 +107,26 @@ body {
   background-size: 300% 300%;
   animation: aether-fluid-wave 3.5s ease infinite;
 }
+
+/* Streaming answer caret (Markdown) and live reasoning caret */
+@keyframes aether-blink {
+  0%, 45% { opacity: 1; }
+  55%, 100% { opacity: 0; }
+}
+.aether-caret,
+.aether-streaming > :last-child::after {
+  display: inline-block;
+  width: 0.45em;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: -0.12em;
+  border-radius: 1px;
+  background: #8b5cf6;
+  animation: aether-blink 1s steps(1) infinite;
+}
+.aether-streaming > :last-child::after {
+  content: "";
+}
+.aether-markdown > :first-child {
+  margin-top: 0;
+}
