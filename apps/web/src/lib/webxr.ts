@@ -1,41 +1,13 @@
 import * as THREE from "three";
 
-/**
- * Configure 6DoF laser beam motion controllers for Meta Quest and Apple Vision Pro.
- */
-export function setupWebXrControllers(
-  scene: THREE.Scene,
-  renderer: THREE.WebGLRenderer
-): { controller0: THREE.XRTargetRaySpace; controller1: THREE.XRTargetRaySpace } {
-  // Controller 0 (Primary Hand)
-  const controller0 = renderer.xr.getController(0);
-  scene.add(controller0);
-
-  // Controller 1 (Secondary Hand)
-  const controller1 = renderer.xr.getController(1);
-  scene.add(controller1);
-
-  // 6DoF Laser Ray Geometry
-  const laserGeometry = new THREE.BufferGeometry().setFromPoints([
-    new THREE.Vector3(0, 0, 0),
-    new THREE.Vector3(0, 0, -5),
-  ]);
-
-  const laserMaterial = new THREE.LineBasicMaterial({
-    color: 0x8b5cf6,
-    transparent: true,
-    opacity: 0.7,
-  });
-
-  const laserLine0 = new THREE.Line(laserGeometry, laserMaterial);
-  laserLine0.name = "laser_line_0";
-  controller0.add(laserLine0);
-
-  const laserLine1 = new THREE.Line(laserGeometry, laserMaterial);
-  laserLine1.name = "laser_line_1";
-  controller1.add(laserLine1);
-
-  return { controller0, controller1 };
+// Initialize WebXR Polyfill for desktop/laptop browsers without native WebXR runtime
+if (typeof window !== "undefined") {
+  try {
+    const WebXRPolyfill = require("webxr-polyfill").default || require("webxr-polyfill");
+    new WebXRPolyfill();
+  } catch (e) {
+    // Non-blocking fallback for SSR or environments where polyfill is unneeded
+  }
 }
 
 /**
@@ -52,6 +24,7 @@ export async function enterImmersiveVr(renderer: THREE.WebGLRenderer): Promise<v
   }
 
   const session = await navigator.xr.requestSession("immersive-vr", {
+    // controllers and hand pinch both drive grabbing (see SpatialInteraction)
     optionalFeatures: ["local-floor", "bounded-floor", "hand-tracking"],
   });
 

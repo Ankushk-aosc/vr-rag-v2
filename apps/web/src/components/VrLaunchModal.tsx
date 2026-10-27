@@ -107,32 +107,33 @@ export function VrLaunchModal({
               </button>
             </div>
           ) : (
-            /* Companion Headset Launch Pattern */
+            /* Laptop Desktop VR Mode & Companion Headset Launch Pattern */
             <div className="space-y-4">
               <div className="text-center space-y-1">
                 <h4 className="font-semibold text-sm">
-                  Launch Inside Your Spatial Headset
+                  Experience Spatial VR On Your Device
                 </h4>
                 <p className={`text-xs leading-relaxed ${isLight ? "text-black/50" : "text-white/50"}`}>
-                  Experience your Australian financial portfolio in full scale inside Apple Vision Pro Safari or Meta Quest Browser.
+                  View your Australian portfolio in full 3D directly on this laptop screen, or stream to Apple Vision Pro / Meta Quest.
                 </p>
               </div>
 
-              {/* Mobile Cardboard Option */}
+              {/* Primary Laptop Desktop VR Suite Option */}
               {onLaunchStereo && (
                 <button
+                  type="button"
                   onClick={() => {
                     onLaunchStereo();
                     onClose();
                   }}
-                  className={`w-full py-3 px-4 rounded-2xl border text-xs font-medium flex items-center justify-center space-x-2 transition-all ${
+                  className={`w-full py-3.5 px-4 rounded-2xl border text-xs font-semibold flex items-center justify-center space-x-2.5 transition-all shadow-md active:scale-95 ${
                     isLight
-                      ? "bg-black/[0.03] hover:bg-black/[0.06] border-black/10 text-black"
-                      : "bg-white/[0.04] hover:bg-white/[0.08] border-white/10 text-white"
+                      ? "bg-[#6D28D9] text-white hover:bg-[#5B21B6] border-[#6D28D9]/40"
+                      : "bg-[#7C3AED] text-white hover:bg-[#6D28D9] border-[#7C3AED]/50"
                   }`}
                 >
-                  <Smartphone className={`w-4 h-4 ${isLight ? "text-[#6D28D9]" : "text-[#A78BFA]"}`} />
-                  <span>Launch Mobile Cardboard Split-Screen Mode</span>
+                  <Monitor className="w-4 h-4 text-cyan-300" />
+                  <span>Launch Laptop Desktop VR Mode (3D & WASD)</span>
                 </button>
               )}
 

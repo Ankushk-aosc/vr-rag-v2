@@ -2,591 +2,320 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
-import { setupWebXrControllers } from "../lib/webxr";
-import { createDocTexture, DEFAULT_SPATIAL_DOCS } from "./docTextureHelper";
-import Strands from "./Strands";
+import { Compass, Move3d, RotateCcw } from "lucide-react";
 import { DocumentRecord } from "../types";
-import { Compass } from "lucide-react";
+import { SpatialWorld } from "../lib/spatial/SpatialWorld";
+import { SpatialInteraction } from "../lib/spatial/SpatialInteraction";
+import { SpatialState } from "../lib/spatial/spatialPanels";
+import { spatialLayout } from "../lib/spatial/spatialLayout";
+import { liveLevels } from "../lib/voice/voiceStore";
+import { layoutStore } from "../lib/layout/layoutStore";
+import { FloatingPanel } from "./FloatingPanel";
 
 interface SpatialSceneProps {
   onRendererReady?: (renderer: THREE.WebGLRenderer) => void;
-  onSelectDocument?: (docName: string, doc?: DocumentRecord) => void;
-  onVoiceOrbClick?: () => void;
+  onSelectDocument?: (doc: DocumentRecord) => void;
+  /** Tap on the 3D voice orb (desktop click or XR select). */
+  onOrbTap?: () => void;
+  onCreateDashboard?: () => void;
+  onCloseDashboard?: () => void;
   theme?: "dark" | "light";
   documents?: DocumentRecord[];
-  isListening?: boolean;
-  audioLevels?: number[];
-  isProcessing?: boolean;
+  /** Latest dialogue / voice state, read every frame. */
+  stateRef: React.MutableRefObject<SpatialState>;
+  /** Skip rendering while another full-screen view (stereo viewer) is open. */
+  paused?: boolean;
 }
+
+const TARGET = new THREE.Vector3(0, 1.3, 0);
+const XR_STANDING_SPOT = new THREE.Vector3(0, 0, 2.7);
 
 export function SpatialScene({
   onRendererReady,
   onSelectDocument,
-  onVoiceOrbClick,
+  onOrbTap,
+  onCreateDashboard,
+  onCloseDashboard,
   theme = "light",
   documents,
-  isListening = false,
-  audioLevels,
-  isProcessing = false,
+  stateRef,
+  paused = false,
 }: SpatialSceneProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const strandsAnchorRef = useRef<HTMLDivElement | null>(null);
+  const worldRef = useRef<SpatialWorld | null>(null);
+  const pausedRef = useRef(paused);
+  const callbacks = useRef({ onRendererReady, onSelectDocument, onOrbTap, onCreateDashboard, onCloseDashboard });
+  callbacks.current = { onRendererReady, onSelectDocument, onOrbTap, onCreateDashboard, onCloseDashboard };
+  pausedRef.current = paused;
+  const documentsRef = useRef(documents || []);
+  const enableGyroRef = useRef<() => void>(() => {});
+  const [canRequestMotion, setCanRequestMotion] = useState(false);
+  const [hasGyro, setHasGyro] = useState(false);
   const isLight = theme === "light";
-  const [hasGyro, setHasGyro] = useState<boolean>(false);
-  const [canRequestMotion, setCanRequestMotion] = useState<boolean>(false);
-
-  const onRendererReadyRef = useRef(onRendererReady);
-  useEffect(() => {
-    onRendererReadyRef.current = onRendererReady;
-  }, [onRendererReady]);
-
-  const onSelectDocumentRef = useRef(onSelectDocument);
-  useEffect(() => {
-    onSelectDocumentRef.current = onSelectDocument;
-  }, [onSelectDocument]);
-
-  const onVoiceOrbClickRef = useRef(onVoiceOrbClick);
-  useEffect(() => {
-    onVoiceOrbClickRef.current = onVoiceOrbClick;
-  }, [onVoiceOrbClick]);
-
-  const isListeningRef = useRef<boolean>(false);
-  const audioLevelsRef = useRef<number[]>([15, 20, 30, 25, 18]);
-  const isProcessingRef = useRef<boolean>(false);
 
   useEffect(() => {
-    isProcessingRef.current = !!isProcessing;
-  }, [isProcessing]);
-
-  useEffect(() => {
-    isListeningRef.current = !!isListening;
-  }, [isListening]);
-
-  useEffect(() => {
-    if (audioLevels && audioLevels.length > 0) {
-      audioLevelsRef.current = audioLevels;
-    }
-  }, [audioLevels]);
-
-  useEffect(() => {
-    if (!containerRef.current) return;
     const container = containerRef.current;
+    if (!container) return;
 
-    // 1. Scene, Camera, Renderer
-    const scene = new THREE.Scene();
-    const bgColor = isLight ? 0xF2F2F7 : 0x040407;
-    scene.background = new THREE.Color(bgColor);
-    scene.fog = new THREE.FogExp2(bgColor, isLight ? 0.04 : 0.045);
-
-    const camera = new THREE.PerspectiveCamera(
-      52,
-      container.clientWidth / container.clientHeight,
-      0.1,
-      100
-    );
-    camera.position.set(0, 1.9, 5.0);
-    camera.lookAt(0, 1.2, 0);
-
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-    renderer.setSize(container.clientWidth, container.clientHeight);
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: "high-performance" });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(container.clientWidth, container.clientHeight);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = isLight ? 0.95 : 1.05;
+    renderer.toneMappingExposure = 1.0;
     renderer.xr.enabled = true;
+    renderer.xr.setReferenceSpaceType("local-floor");
+    // render panels at a higher resolution in the headset for legible text
+    renderer.xr.setFramebufferScaleFactor(1.25);
     container.appendChild(renderer.domElement);
+    renderer.domElement.style.touchAction = "none";
+    callbacks.current.onRendererReady?.(renderer);
 
-    if (onRendererReadyRef.current) onRendererReadyRef.current(renderer);
-
-    // Setup WebXR 6DoF Laser Controllers
-    setupWebXrControllers(scene, renderer);
-
-    // 2. Architectural Gallery: Sovereign Royal Purple Circular Podium
-    const podiumGeo = new THREE.CylinderGeometry(3.6, 3.8, 0.25, 64);
-    const podiumMat = new THREE.MeshStandardMaterial({
-      color: isLight ? 0xE4E4EC : 0x1E1035, // Sovereign royal purple in both light and dark mode
-      roughness: isLight ? 0.6 : 0.7,
-      metalness: isLight ? 0.15 : 0.25,
+    const world = new SpatialWorld({
+      renderer,
+      theme: isLight ? "light" : "dark",
+      environment: "pavilion",
+      documents: documentsRef.current,
+      onSelectDocument: (doc) => callbacks.current.onSelectDocument?.(doc),
+      onOrbTap: () => callbacks.current.onOrbTap?.(),
+      onCreateDashboard: () => callbacks.current.onCreateDashboard?.(),
+      onCloseDashboard: () => callbacks.current.onCloseDashboard?.(),
     });
-    const podium = new THREE.Mesh(podiumGeo, podiumMat);
-    podium.position.y = -0.12;
-    scene.add(podium);
+    worldRef.current = world;
 
-    // Clean subtle architectural contour hairline on podium
-    const rimGeo = new THREE.RingGeometry(3.55, 3.58, 64);
-    const rimMat = new THREE.MeshBasicMaterial({
-      color: isLight ? 0x7C3AED : 0xA855F7,
-      transparent: true,
-      opacity: isLight ? 0.75 : 0.85,
-      side: THREE.DoubleSide,
+    // Camera rig: the dolly is the user's "feet" in VR and the orbit pivot on desktop
+    const dolly = new THREE.Group();
+    world.scene.add(dolly);
+    const camera = new THREE.PerspectiveCamera(52, container.clientWidth / container.clientHeight, 0.05, 100);
+    dolly.add(camera);
+
+    let yaw = 0;
+    let pitch = 0.08;
+    let radius = 5.2;
+    let gyroYaw = 0;
+    let gyroPitch = 0;
+    const placeCamera = () => {
+      const y = yaw + gyroYaw;
+      const p = THREE.MathUtils.clamp(pitch + gyroPitch, -0.35, 0.75);
+      camera.position.set(
+        TARGET.x + radius * Math.sin(y) * Math.cos(p),
+        TARGET.y + radius * Math.sin(p),
+        TARGET.z + radius * Math.cos(y) * Math.cos(p)
+      );
+      camera.lookAt(TARGET);
+    };
+    placeCamera();
+
+    const interaction = new SpatialInteraction({
+      dom: renderer.domElement,
+      scene: world.scene,
+      getItems: () => world.items,
+      renderer,
+      xrParent: dolly,
+      isLocked: () => layoutStore.get().locked,
+      pick: (clientX, clientY) => {
+        const rect = renderer.domElement.getBoundingClientRect();
+        return {
+          camera,
+          ndc: new THREE.Vector2(
+            ((clientX - rect.left) / rect.width) * 2 - 1,
+            -((clientY - rect.top) / rect.height) * 2 + 1
+          ),
+        };
+      },
+      onBackgroundDrag: (dx, dy) => {
+        yaw -= dx * 0.005;
+        pitch = THREE.MathUtils.clamp(pitch + dy * 0.004, -0.35, 0.75);
+        placeCamera();
+      },
+      onBackgroundWheel: (dy) => {
+        radius = THREE.MathUtils.clamp(radius * (1 + Math.sign(dy) * 0.08), 2.2, 9);
+        placeCamera();
+      },
+      onThumbstick: (hand, x, y, dt) => {
+        const head = renderer.xr.getCamera();
+        if (hand === "right") {
+          // smooth turn around the user's head
+          const headPos = head.getWorldPosition(new THREE.Vector3());
+          const angle = -x * dt * 1.6;
+          dolly.position.sub(headPos).applyAxisAngle(new THREE.Vector3(0, 1, 0), angle).add(headPos);
+          dolly.rotation.y += angle;
+        } else {
+          const forward = head.getWorldDirection(new THREE.Vector3());
+          forward.y = 0;
+          forward.normalize();
+          const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0));
+          dolly.position.addScaledVector(forward, -y * dt * 1.8).addScaledVector(right, x * dt * 1.8);
+        }
+      },
     });
-    const rim = new THREE.Mesh(rimGeo, rimMat);
-    rim.rotation.x = -Math.PI / 2;
-    rim.position.y = 0.01;
-    scene.add(rim);
 
-    // 3. Active Document Slabs Configuration
-    const activeDocs: (DocumentRecord | null)[] =
-      documents && documents.length > 0
-        ? documents.slice(0, 5)
-        : DEFAULT_SPATIAL_DOCS;
-
-    const count = activeDocs.length;
-    const docConfigs = activeDocs.map((doc, idx) => {
-      const theta = count === 1 ? 0 : -0.85 + (1.7 * idx) / (count - 1);
-      const radius = 2.85;
-      const x = Math.sin(theta) * radius;
-      const z = -Math.cos(theta) * radius + 1.25;
-      const y = 1.35 + (idx % 2 === 0 ? 0.05 : -0.05);
-      const rotY = -theta * 0.88;
-      return {
-        doc,
-        title: doc ? doc.original_name : `Document ${idx + 1}`,
-        pos: [x, y, z] as [number, number, number],
-        rotY,
+    if (process.env.NODE_ENV !== "production") {
+      // test hook: where is a 3D object on screen? (used by the browser end-to-end tests)
+      (window as any).__spatialDebug = {
+        ids: () => world.items.map((i) => i.id),
+        screenOf: (id: string) => {
+          const item = world.items.find((i) => i.id === id);
+          if (!item) return null;
+          const v = item.object.getWorldPosition(new THREE.Vector3()).project(camera);
+          const r = renderer.domElement.getBoundingClientRect();
+          return { x: r.left + ((v.x + 1) / 2) * r.width, y: r.top + ((1 - v.y) / 2) * r.height, inView: Math.abs(v.x) < 1 && Math.abs(v.y) < 1 };
+        },
+        positionOf: (id: string) => world.items.find((i) => i.id === id)?.object.getWorldPosition(new THREE.Vector3()).toArray(),
+        objectVisible: (name: string) => {
+          let visible = false;
+          world.scene.traverse((o) => {
+            if (o.name === name) visible = o.visible;
+          });
+          return visible;
+        },
       };
-    });
+    }
 
-    const slabGeometry = new THREE.BoxGeometry(0.95, 1.35, 0.04);
-    const slabEdgesGeometry = new THREE.EdgesGeometry(slabGeometry);
-    const slabs: THREE.Mesh[] = [];
-
-    docConfigs.forEach((cfg) => {
-      const texture = createDocTexture(cfg.doc, isLight, cfg.title);
-      const slabMat = new THREE.MeshPhysicalMaterial({
-        map: texture,
-        color: 0xFFFFFF, // Full dynamic range for canvas texture
-        emissive: isLight ? 0x000000 : 0x1E1B2E,
-        emissiveIntensity: isLight ? 0.0 : 0.15,
-        roughness: 0.45, // Soft non-glaring surface so text is crystal clear
-        metalness: 0.02,
-        transparent: true,
-        opacity: 1.0,
-      });
-
-      const slab = new THREE.Mesh(slabGeometry, slabMat);
-      slab.position.set(cfg.pos[0], cfg.pos[1], cfg.pos[2]);
-      slab.rotation.y = cfg.rotY;
-      slab.userData = { title: cfg.title, originalY: cfg.pos[1], docRecord: cfg.doc };
-
-      // Crisp vivid card edge border line
-      const edgeLineMat = new THREE.LineBasicMaterial({
-        color: isLight ? 0x6D28D9 : 0xA78BFA,
-        transparent: true,
-        opacity: isLight ? 0.8 : 0.9,
-        linewidth: 2,
-      });
-      const wireframeBorder = new THREE.LineSegments(slabEdgesGeometry, edgeLineMat);
-      wireframeBorder.raycast = () => {}; // Do not intercept raycasting from slab parent
-      wireframeBorder.userData = { title: cfg.title, docRecord: cfg.doc };
-      slab.add(wireframeBorder);
-
-      scene.add(slab);
-      slabs.push(slab);
-    });
-
-    // 4. Studio Lighting (Balanced to prevent overexposure/bleaching)
-    scene.add(new THREE.AmbientLight(0xffffff, isLight ? 0.55 : 0.6));
-
-    // Direct front fill light to illuminate document faces
-    const frontLight = new THREE.DirectionalLight(0xffffff, isLight ? 0.45 : 0.65);
-    frontLight.position.set(0, 2.0, 5.0);
-    scene.add(frontLight);
-
-    const keyLight = new THREE.DirectionalLight(0xfff8ee, isLight ? 0.65 : 0.85);
-    keyLight.position.set(4, 5, 3);
-    scene.add(keyLight);
-
-    const fillLight = new THREE.DirectionalLight(0xe8e5f5, isLight ? 0.35 : 0.45);
-    fillLight.position.set(-4, 3, 2);
-    scene.add(fillLight);
-
-    // Clean architectural overhead studio light
-    const overheadLight = new THREE.PointLight(0xffffff, isLight ? 0.35 : 0.45, 10);
-    overheadLight.position.set(0, 3.5, -1);
-    scene.add(overheadLight);
-
-    // 5. Interactive Raycasting & Direct 1:1 Orbit Drag Controls
-    const raycaster = new THREE.Raycaster();
-    const mouse = new THREE.Vector2(-1000, -1000);
-
-    let isDragging = false;
-    let dragDistance = 0;
-    let previousPosition = { x: 0, y: 0 };
-    let cameraAngleY = 0;
-    let cameraAngleX = 0;
-
-    const updateCameraPosition = () => {
-      const radius = 5.0;
-      camera.position.x = radius * Math.sin(cameraAngleY) * Math.cos(cameraAngleX);
-      camera.position.z = radius * Math.cos(cameraAngleY) * Math.cos(cameraAngleX);
-      camera.position.y = 1.9 + radius * Math.sin(cameraAngleX);
-      camera.lookAt(0, 1.2, 0);
+    const onSessionStart = () => {
+      dolly.position.copy(XR_STANDING_SPOT);
+      dolly.rotation.set(0, 0, 0);
+      camera.position.set(0, 0, 0);
+      camera.rotation.set(0, 0, 0);
     };
-
-    const onMouseDown = (e: MouseEvent) => {
-      if (renderer.xr.isPresenting || e.button !== 0) return;
-      isDragging = true;
-      dragDistance = 0;
-      previousPosition = { x: e.clientX, y: e.clientY };
-      container.style.cursor = "grabbing";
+    const onSessionEnd = () => {
+      dolly.position.set(0, 0, 0);
+      dolly.rotation.set(0, 0, 0);
+      placeCamera();
     };
+    renderer.xr.addEventListener("sessionstart", onSessionStart);
+    renderer.xr.addEventListener("sessionend", onSessionEnd);
 
-    const onMouseMove = (e: MouseEvent) => {
-      const rect = container.getBoundingClientRect();
-      const isInside =
-        e.clientX >= rect.left &&
-        e.clientX <= rect.right &&
-        e.clientY >= rect.top &&
-        e.clientY <= rect.bottom;
-
-      if (isInside) {
-        mouse.x = ((e.clientX - rect.left) / container.clientWidth) * 2 - 1;
-        mouse.y = -((e.clientY - rect.top) / container.clientHeight) * 2 + 1;
-      } else if (!isDragging) {
-        mouse.set(-1000, -1000);
-      }
-
-      if (!isDragging || renderer.xr.isPresenting) return;
-
-      const deltaX = e.clientX - previousPosition.x;
-      const deltaY = e.clientY - previousPosition.y;
-      dragDistance += Math.hypot(deltaX, deltaY);
-
-      cameraAngleY -= deltaX * 0.005;
-      cameraAngleX = Math.max(-0.4, Math.min(0.6, cameraAngleX + deltaY * 0.005));
-
-      updateCameraPosition();
-      previousPosition = { x: e.clientX, y: e.clientY };
+    // Gyroscope look-around on phones / tablets
+    let gyroBase: { a: number; b: number } | null = null;
+    const onOrientation = (e: DeviceOrientationEvent) => {
+      if (e.alpha == null || e.beta == null) return;
+      if (!gyroBase) gyroBase = { a: e.alpha, b: e.beta };
+      const da = ((e.alpha - gyroBase.a + 540) % 360) - 180;
+      gyroYaw = THREE.MathUtils.degToRad(-da) * 0.7;
+      gyroPitch = THREE.MathUtils.degToRad(THREE.MathUtils.clamp(e.beta - gyroBase.b, -25, 25)) * 0.7;
+      placeCamera();
     };
-
-    const onMouseUp = () => {
-      if (!isDragging) return;
-      isDragging = false;
-      container.style.cursor = "grab";
-
-      // Intentional click (< 6px movement)
-      if (dragDistance < 6 && !renderer.xr.isPresenting) {
-        camera.updateMatrixWorld();
-        raycaster.setFromCamera(mouse, camera);
-
-        // Click on Document Slab
-        const intersects = raycaster.intersectObjects(slabs, true);
-        if (intersects.length > 0) {
-          let hitMesh: THREE.Object3D | null = intersects[0].object;
-          while (hitMesh && !slabs.includes(hitMesh as THREE.Mesh)) {
-            hitMesh = hitMesh.parent;
-          }
-          if (hitMesh) {
-            const title = hitMesh.userData?.title;
-            const docRecord = hitMesh.userData?.docRecord;
-            if (title && onSelectDocumentRef.current) {
-              onSelectDocumentRef.current(title, docRecord);
-            }
-          }
-        }
-      }
-    };
-
-    const onTouchStart = (e: TouchEvent) => {
-      if (renderer.xr.isPresenting || e.touches.length === 0) return;
-      isDragging = true;
-      dragDistance = 0;
-      previousPosition = { x: e.touches[0].clientX, y: e.touches[0].clientY };
-    };
-
-    const onTouchMove = (e: TouchEvent) => {
-      if (!isDragging || renderer.xr.isPresenting || e.touches.length === 0) return;
-      const touch = e.touches[0];
-      const deltaX = touch.clientX - previousPosition.x;
-      const deltaY = touch.clientY - previousPosition.y;
-      dragDistance += Math.hypot(deltaX, deltaY);
-
-      cameraAngleY -= deltaX * 0.005;
-      cameraAngleX = Math.max(-0.4, Math.min(0.6, cameraAngleX + deltaY * 0.005));
-
-      updateCameraPosition();
-      previousPosition = { x: touch.clientX, y: touch.clientY };
-    };
-
-    const onTouchEnd = (e: TouchEvent) => {
-      if (!isDragging) return;
-      isDragging = false;
-
-      if (dragDistance < 6 && !renderer.xr.isPresenting && e.changedTouches.length > 0) {
-        const touch = e.changedTouches[0];
-        const rect = container.getBoundingClientRect();
-        mouse.x = ((touch.clientX - rect.left) / container.clientWidth) * 2 - 1;
-        mouse.y = -((touch.clientY - rect.top) / container.clientHeight) * 2 + 1;
-        camera.updateMatrixWorld();
-        raycaster.setFromCamera(mouse, camera);
-
-        // Touch on Document Slab
-        const intersects = raycaster.intersectObjects(slabs, true);
-        if (intersects.length > 0) {
-          let hitMesh: THREE.Object3D | null = intersects[0].object;
-          while (hitMesh && !slabs.includes(hitMesh as THREE.Mesh)) {
-            hitMesh = hitMesh.parent;
-          }
-          if (hitMesh) {
-            const title = hitMesh.userData?.title;
-            const docRecord = hitMesh.userData?.docRecord;
-            if (title && onSelectDocumentRef.current) {
-              onSelectDocumentRef.current(title, docRecord);
-            }
-          }
-        }
-      }
-    };
-
-    container.addEventListener("mousedown", onMouseDown);
-    container.addEventListener("touchstart", onTouchStart, { passive: true });
-    window.addEventListener("mousemove", onMouseMove);
-    window.addEventListener("mouseup", onMouseUp);
-    window.addEventListener("touchmove", onTouchMove, { passive: true });
-    window.addEventListener("touchend", onTouchEnd);
-
-    // 7. Safe Gyroscope Tracking (Strictly for mobile or manual opt-in)
-    let gyroBaselineAlpha: number | null = null;
-    let gyroBaselineBeta: number | null = null;
-
-    const onDeviceOrientation = (e: DeviceOrientationEvent) => {
-      if (e.alpha === null || e.beta === null) return;
-      if (gyroBaselineAlpha === null || gyroBaselineBeta === null) {
-        gyroBaselineAlpha = e.alpha;
-        gyroBaselineBeta = e.beta;
-        return;
-      }
-
-      let deltaAlpha = e.alpha - gyroBaselineAlpha;
-      deltaAlpha = ((deltaAlpha + 180) % 360) - 180;
-      const deltaBeta = e.beta - gyroBaselineBeta;
-
-      const gyroYaw = THREE.MathUtils.degToRad(-deltaAlpha) * 0.7;
-      const gyroPitch = THREE.MathUtils.degToRad(Math.max(-25, Math.min(25, deltaBeta))) * 0.7;
-
-      const radius = 5.0;
-      const currentY = cameraAngleY + gyroYaw;
-      const currentX = Math.max(-0.4, Math.min(0.6, cameraAngleX + gyroPitch));
-      camera.position.x = radius * Math.sin(currentY) * Math.cos(currentX);
-      camera.position.z = radius * Math.cos(currentY) * Math.cos(currentX);
-      camera.position.y = 1.9 + radius * Math.sin(currentX);
-      camera.lookAt(0, 1.2, 0);
-    };
-
-    // Gate gyroscope: ONLY attach on genuine mobile phones/tablets or when user requests motion
-    const isRealMobile =
-      typeof window !== "undefined" &&
-      /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-
-    if (isRealMobile && typeof window !== "undefined" && "DeviceOrientationEvent" in window) {
-      if (typeof (DeviceOrientationEvent as any).requestPermission === "function") {
-        setCanRequestMotion(true);
-      } else {
-        window.addEventListener("deviceorientation", onDeviceOrientation);
+    const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+    if (isMobile && "DeviceOrientationEvent" in window) {
+      if (typeof (DeviceOrientationEvent as any).requestPermission === "function") setCanRequestMotion(true);
+      else {
+        window.addEventListener("deviceorientation", onOrientation);
         setHasGyro(true);
       }
     }
+    const enableGyro = () => {
+      window.addEventListener("deviceorientation", onOrientation);
+      setHasGyro(true);
+      setCanRequestMotion(false);
+    };
+    enableGyroRef.current = enableGyro;
 
-    // 8. Animation Loop
     const clock = new THREE.Clock();
-
+    const viewer = new THREE.Vector3();
+    const forward = new THREE.Vector3();
     renderer.setAnimationLoop(() => {
-      const time = clock.getElapsedTime();
-
-      // Floating document slabs with gentle breathing
-      slabs.forEach((slab, idx) => {
-        slab.position.y =
-          slab.userData.originalY + Math.sin(time * 0.75 + idx * 1.5) * 0.04;
-      });
-
-      // Raycast hover check (only when not actively dragging)
-      if (!isDragging) {
-        raycaster.setFromCamera(mouse, camera);
-
-        // Slab Hover Check
-        const intersects = raycaster.intersectObjects(slabs, true);
-        const isOverAnyCard = intersects.length > 0;
-        container.style.cursor = isOverAnyCard ? "pointer" : "grab";
-        slabs.forEach((slab) => {
-          const isHovered = intersects.some(
-            (hit) => hit.object === slab || hit.object.parent === slab
-          );
-          slab.scale.setScalar(isHovered ? 1.05 : 1.0);
-        });
-      } else {
-        container.style.cursor = "grabbing";
-        slabs.forEach((slab) => slab.scale.setScalar(1.0));
-      }
-
-      // Track 3D podium anchor for Strands visualizer (centered on podium floor among cards)
-      if (strandsAnchorRef.current && container) {
-        const anchor = new THREE.Vector3(0, 0.45, 0);
-        anchor.project(camera);
-        if (anchor.z < 1.0) {
-          const x = (anchor.x * 0.5 + 0.5) * container.clientWidth;
-          const y = (-anchor.y * 0.5 + 0.5) * container.clientHeight;
-          strandsAnchorRef.current.style.transform = `translate3d(${x}px, ${y}px, 0px) translate(-50%, -50%)`;
-        }
-      }
-
-      renderer.render(scene, camera);
+      const dt = Math.min(clock.getDelta(), 0.1);
+      if (pausedRef.current && !renderer.xr.isPresenting) return;
+      interaction.update(dt);
+      const eye = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+      world.spawnDistance = renderer.xr.isPresenting ? 2.3 : 3.2;
+      eye.getWorldPosition(viewer);
+      eye.getWorldDirection(forward);
+      world.update(dt, performance.now(), stateRef.current, liveLevels, viewer, forward);
+      renderer.render(world.scene, camera);
     });
 
-    // 9. Resize Handler
-    const handleResize = () => {
-      if (!container || renderer.xr.isPresenting) return;
+    const onResize = () => {
+      if (renderer.xr.isPresenting) return;
       camera.aspect = container.clientWidth / container.clientHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(container.clientWidth, container.clientHeight);
     };
-
-    window.addEventListener("resize", handleResize);
+    const ro = new ResizeObserver(onResize);
+    ro.observe(container);
 
     return () => {
       renderer.setAnimationLoop(null);
-      container.removeEventListener("mousedown", onMouseDown);
-      container.removeEventListener("touchstart", onTouchStart);
-      window.removeEventListener("mousemove", onMouseMove);
-      window.removeEventListener("mouseup", onMouseUp);
-      window.removeEventListener("touchmove", onTouchMove);
-      window.removeEventListener("touchend", onTouchEnd);
-      window.removeEventListener("resize", handleResize);
-      window.removeEventListener("deviceorientation", onDeviceOrientation);
-      if (renderer.domElement && container.contains(renderer.domElement)) {
-        container.removeChild(renderer.domElement);
-      }
+      ro.disconnect();
+      window.removeEventListener("deviceorientation", onOrientation);
+      renderer.xr.removeEventListener("sessionstart", onSessionStart);
+      renderer.xr.removeEventListener("sessionend", onSessionEnd);
+      interaction.dispose();
+      world.dispose();
+      worldRef.current = null;
+      if (container.contains(renderer.domElement)) container.removeChild(renderer.domElement);
       renderer.dispose();
     };
-  }, [isLight, documents]);
+  }, [isLight, stateRef]);
 
-  // Map frequency bands to normalized 0.0-1.0 scalar for Strands shader
-  const micLevel = audioLevels && audioLevels.length > 0
-    ? Math.min(1.0, Math.max(0.0, (audioLevels.reduce((a, b) => a + b, 0) / audioLevels.length - 15) / 75))
-    : 0;
-
-  const isActive = isListening || isProcessing;
+  // Swap document slabs in place instead of rebuilding the whole scene
+  useEffect(() => {
+    documentsRef.current = documents || [];
+    worldRef.current?.setDocuments(documentsRef.current);
+  }, [documents]);
 
   return (
-    <div className="relative w-full h-full min-h-[500px] overflow-hidden select-none">
-      <div
-        ref={containerRef}
-        className="w-full h-full cursor-grab active:cursor-grabbing touch-none select-none"
-      />
+    <div className="relative w-full h-full overflow-hidden select-none">
+      <div ref={containerRef} className="w-full h-full" />
 
-      {/* Interactive Strands 3D Podium Visualizer (Positioned on Podium between Cards) */}
-      <div
-        ref={strandsAnchorRef}
-        className={`absolute top-0 left-0 pointer-events-none z-10 transition-opacity duration-500 ease-out ${
-          isActive ? "opacity-100" : "opacity-0"
-        }`}
-        style={{
-          transform: "translate3d(50%, 65%, 0px) translate(-50%, -50%)",
-          willChange: "transform, opacity",
-        }}
+      <FloatingPanel
+        id="scene-tips"
+        theme={theme}
+        resize="none"
+        minW={220}
+        minH={40}
+        defaultRect={(vw) => ({ x: 24, y: 112, w: Math.min(330, vw - 48), h: 40 })}
       >
         <div
-          className={`w-[180px] sm:w-[220px] h-[180px] sm:h-[220px] relative pointer-events-auto cursor-pointer transition-transform duration-500 ease-out ${
-            isActive ? "scale-100" : "scale-75"
+          data-drag-handle
+          className={`w-full h-full flex items-center gap-2 px-3.5 rounded-full border text-[11px] font-medium cursor-grab active:cursor-grabbing touch-none ${
+            isLight ? "bg-white border-black/10 text-black/70 shadow-sm" : "bg-[#141418] border-white/10 text-white/70 shadow-lg"
           }`}
-          onClick={() => onVoiceOrbClick?.()}
-          title="Click to interact with Aether Voice Intelligence"
         >
-          <Strands
-            colors={["#7C3AED", "#8B5CF6", "#A855F7", "#C084FC", "#A855F7", "#8B5CF6", "#7C3AED", "#6D28D9"]}
-            count={3}
-            speed={isActive ? 1.35 : 0.85}
-            amplitude={isActive ? 1.15 : 0.75}
-            waviness={1}
-            energy={isActive ? 0.75 : 0.45}
-            thickness={1.1}
-            spread={1}
-            glow={1.2}
-            taper={1}
-            intensity={1.2}
-            saturation={1}
-            hueShift={0}
-            scale={1}
-            glass={false}
-            glassSize={1}
-            refraction={1}
-            rim={1}
-            dispersion={1}
-            listening={isActive}
-            level={micLevel}
-            interactive={true}
-            clickPulse={true}
-            intro={true}
-            lightMode={false}
-          />
-        </div>
-      </div>
-
-      {/* Telemetry Badge with Dynamic Voice Status */}
-      <div
-        className={`absolute top-28 left-6 pointer-events-none flex items-center space-x-2 text-[11px] font-medium px-3.5 py-1.5 rounded-full border backdrop-blur-2xl transition-all ${
-          isLight
-            ? "bg-white/80 border-black/10 text-black/75 shadow-sm"
-            : "bg-black/50 border-white/10 text-white/70 shadow-lg"
-        }`}
-      >
-        {isListening ? (
-          <>
-            <span className="w-2 h-2 rounded-full bg-violet-400 animate-ping" />
-            <span className={isLight ? "text-purple-700 font-semibold" : "text-violet-300 font-semibold"}>
-              Aether Voice Active • Neural Wave Resonance
-            </span>
-          </>
-        ) : (
-          <>
-            <span className="w-1.5 h-1.5 rounded-full bg-[#8B5CF6] animate-pulse" />
-            <span>Aether Sovereign Pavilion • Spatial Evidence Room</span>
-          </>
-        )}
-      </div>
-
-      {/* Gyroscope Indicator / Enable Motion Action for iOS */}
-      <div className="absolute top-28 right-6 flex items-center space-x-2">
-        {hasGyro ? (
-          <div
-            className={`flex items-center space-x-1.5 text-[11px] font-medium px-3 py-1.5 rounded-full border backdrop-blur-2xl transition-all ${
-              isLight
-                ? "bg-white/80 border-black/10 text-emerald-700 shadow-sm"
-                : "bg-black/50 border-emerald-500/30 text-emerald-300 shadow-lg"
-            }`}
-          >
-            <Compass className="w-3.5 h-3.5 animate-spin" style={{ animationDuration: "14s" }} />
-            <span>Gyroscope Active</span>
-          </div>
-        ) : canRequestMotion ? (
+          <Move3d className="w-3.5 h-3.5 text-[#8B5CF6] flex-shrink-0 pointer-events-none" />
+          <span className="truncate pointer-events-none">Drag any panel, orb or document • scroll to push/pull</span>
           <button
-            onClick={async () => {
-              if (
-                typeof DeviceOrientationEvent !== "undefined" &&
-                typeof (DeviceOrientationEvent as any).requestPermission === "function"
-              ) {
+            onClick={() => spatialLayout.reset()}
+            title="Reset 3D layout"
+            className={`ml-auto p-1 rounded-full flex-shrink-0 ${isLight ? "hover:bg-black/5" : "hover:bg-white/10"}`}
+          >
+            <RotateCcw className="w-3 h-3" />
+          </button>
+        </div>
+      </FloatingPanel>
+
+      {(hasGyro || canRequestMotion) && (
+        <div className="absolute top-28 right-6 z-20">
+          {hasGyro ? (
+            <div
+              className={`flex items-center space-x-1.5 text-[11px] font-medium px-3 py-1.5 rounded-full border ${
+                isLight ? "bg-white border-black/10 text-emerald-700" : "bg-black/60 border-emerald-500/30 text-emerald-300"
+              }`}
+            >
+              <Compass className="w-3.5 h-3.5" />
+              <span>Gyroscope active</span>
+            </div>
+          ) : (
+            <button
+              onClick={async () => {
                 try {
                   const perm = await (DeviceOrientationEvent as any).requestPermission();
-                  if (perm === "granted") {
-                    setHasGyro(true);
-                    setCanRequestMotion(false);
-                    window.location.reload();
-                  }
+                  if (perm === "granted") enableGyroRef.current();
                 } catch (e) {
                   console.warn("Motion permission error:", e);
                 }
-              }
-            }}
-            className={`flex items-center space-x-1.5 text-[11px] font-medium px-3.5 py-1.5 rounded-full border backdrop-blur-2xl transition-all cursor-pointer hover:scale-105 active:scale-95 ${
-              isLight
-                ? "bg-purple-50 border-purple-300 text-purple-700 shadow-sm"
-                : "bg-purple-950/60 border-purple-500/40 text-purple-200 shadow-lg"
-            }`}
-          >
-            <Compass className="w-3.5 h-3.5" />
-            <span>Enable Gyroscope</span>
-          </button>
-        ) : null}
-      </div>
+              }}
+              className={`flex items-center space-x-1.5 text-[11px] font-medium px-3.5 py-1.5 rounded-full border ${
+                isLight ? "bg-purple-50 border-purple-300 text-purple-700" : "bg-purple-950/60 border-purple-500/40 text-purple-200"
+              }`}
+            >
+              <Compass className="w-3.5 h-3.5" />
+              <span>Enable gyroscope</span>
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }
