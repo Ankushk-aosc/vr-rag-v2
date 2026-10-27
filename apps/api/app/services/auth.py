@@ -59,36 +59,45 @@ def decode_access_token(token: str) -> Dict[str, Any]:
 
 
 async def get_current_user_optional(
-    auth: Optional[HTTPAuthorizationCredentials] = Security(security)
+    auth_cred: Optional[HTTPAuthorizationCredentials] = Security(security)
 ) -> Optional[Dict[str, Any]]:
-    if not auth:
+    if not auth_cred:
         return None
-    payload = decode_access_token(auth.credentials)
+    payload = decode_access_token(auth_cred.credentials)
     user_id = payload.get("sub")
     if not user_id:
-        return None
-    user = pinecone_service.get_user_from_pinecone(user_id)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token missing subject identifier."
+        )
+    
+    # Query transactional system of record
+    from app.db import sqlite
+    user = sqlite.get_user_by_id(user_id)
     if not user:
-        return {
-            "id": user_id,
-            "email": payload.get("email", ""),
-            "memberships": [{"family_entity_id": "default_family", "role": "family_admin"}]
-        }
-    user["memberships"] = [
-        {"family_entity_id": user.get("family_entity_id", "default_family"), "role": user.get("role", "family_admin")}
-    ]
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User account not found or deactivated. Access denied."
+        )
+    
+    # Derive real memberships strictly from system of record (fail closed, never default to admin)
+    memberships = sqlite.get_user_memberships(user_id)
+    user["memberships"] = memberships
     return user
 
 
 async def get_current_user(
-    auth: Optional[HTTPAuthorizationCredentials] = Security(security)
+    auth_cred: Optional[HTTPAuthorizationCredentials] = Security(security)
 ) -> Dict[str, Any]:
-    if not auth:
+    if not auth_cred:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required. Please provide a Bearer token."
+            detail="Authentication required. Please provide a valid Bearer token."
         )
-    user = await get_current_user_optional(auth)
+    user = await get_current_user_optional(auth_cred)
     if not user:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User account not found or invalid token.")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User account not found or invalid token."
+        )
     return user
