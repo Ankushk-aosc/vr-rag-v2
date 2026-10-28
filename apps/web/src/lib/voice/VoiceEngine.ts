@@ -104,6 +104,7 @@ export class VoiceEngine {
   private standby = false;
   private wakeWordTriggered = false;
   private wakeWordTimeout: ReturnType<typeof setTimeout> | null = null;
+  private lastStandbyCheck = 0;
 
   // speaking state
   private queue: QueuedSpeech[] = [];
@@ -271,14 +272,16 @@ export class VoiceEngine {
    */
   startConversationFromWake(): void {
     this.standby = false;
+    this.recognitionFailed = false;
     this.setPhase("listening");
     voiceStore.set({ conversation: true, standby: false, phase: "listening", interim: "", error: null });
-    this.finalText = "";
-    this.interimText = "";
-    this.lastResultAt = performance.now();
-    this.listenStartedAt = performance.now();
-    this.heardSpeech = false;
-    this.ensureMic().then(() => this.startRecorder()).catch(() => {});
+    this.ensureMic()
+      .then(() => {
+        this.listen();
+      })
+      .catch((err) => {
+        console.warn("[Aether Voice] Mic error on wake:", err);
+      });
   }
 
   /**
@@ -432,6 +435,20 @@ export class VoiceEngine {
       };
     }
 
+    // Standby watchdog: If in standby mode and recognition died for any reason, re-start it!
+    if (this.standby && !this.inConversation && !this.finishing && !this.recognition) {
+      if (!this.lastStandbyCheck || now - this.lastStandbyCheck > 2000) {
+        this.lastStandbyCheck = now;
+        const Ctor = getRecognitionCtor();
+        if (Ctor) this.startRecognition(Ctor);
+      }
+    }
+    // In standby mode, discard stale transcript fragments after 4 seconds of silence
+    if (this.standby && !this.inConversation && (this.finalText || this.interimText) && this.lastResultAt && now - this.lastResultAt > 4000) {
+      this.finalText = "";
+      this.interimText = "";
+    }
+
     const isListeningTurn = phase === "listening" && !this.finishing;
     if (isListeningTurn) {
       if (frame.inUtterance) this.heardSpeech = true;
@@ -501,16 +518,15 @@ export class VoiceEngine {
     this.finishing = false;
     this.wakeWordTriggered = false;
     this.standby = true;
+    this.recognitionFailed = false;
     this.listenStartedAt = performance.now();
     this.setPhase("idle");
     voiceStore.set({ standby: true, conversation: false, interim: "", phase: "idle" });
 
-    // Standby mode only needs SpeechRecognition to detect the wake word.
-    // If recognition is already active, keep it running smoothly.
-    if (!this.recognition) {
-      const allowBrowser = voiceStore.get().sttMode === "auto";
-      const Ctor = allowBrowser ? getRecognitionCtor() : null;
-      if (Ctor) this.startRecognition(Ctor);
+    // Standby mode requires SpeechRecognition to detect the wake word.
+    const Ctor = getRecognitionCtor();
+    if (Ctor && !this.recognition) {
+      this.startRecognition(Ctor);
     }
     voiceStore.set({ sttEngine: this.recognition ? "browser" : "server" });
   }
@@ -542,6 +558,13 @@ export class VoiceEngine {
   }
 
   private startRecognition(Ctor: SpeechRecognitionCtor): void {
+    if (this.recognition) {
+      try {
+        const old = this.recognition;
+        this.recognition = null;
+        old.abort();
+      } catch {}
+    }
     try {
       const rec = new Ctor();
       rec.continuous = true;
@@ -651,38 +674,36 @@ export class VoiceEngine {
         vlog("recogniser-error", { error: e.error });
         console.warn("[Aether Voice] Speech recognition error:", e.error);
 
-        // In standby or wake-word mode, never permanently disable speech recognition!
-        if (this.standby || voiceStore.get().wakeWordEnabled) {
+        if (this.recognition === rec) {
+          this.recognition = null;
+        }
+
+        // In standby, wake-word mode, or active conversation, auto-recover from transient errors!
+        if (this.standby || voiceStore.get().wakeWordEnabled || this.inConversation) {
           setTimeout(() => {
-            if (this.standby && !this.inConversation && !this.finishing) {
-              if (this.recognition === rec) this.recognition = null;
+            if ((this.standby || this.phase === "listening") && !this.finishing && !this.recognition) {
               const Ctor = getRecognitionCtor();
               if (Ctor) this.startRecognition(Ctor);
             }
-          }, 1000);
+          }, 500);
           return;
         }
 
         this.recognitionFailed = true;
-        if (this.recognition === rec) {
-          this.recognition = null;
-          voiceStore.set({ sttEngine: "server" });
-        }
+        voiceStore.set({ sttEngine: "server" });
       };
       rec.onend = () => {
-        // Keep listening while in conversation or standby
-        if (this.recognition === rec && (this.phase === "listening" || this.standby) && !this.finishing) {
+        // Clear instance reference as this instance has ended
+        if (this.recognition === rec) {
+          this.recognition = null;
+        }
+        // In Chrome, Web Speech terminates after ~30-60s of silence or utterance end.
+        // Always instantiate a FRESH recognizer instance rather than calling start() on an ended instance!
+        if ((this.phase === "listening" || this.standby) && !this.finishing) {
           setTimeout(() => {
-            if ((this.phase === "listening" || this.standby) && !this.finishing) {
-              try {
-                rec.start();
-              } catch {
-                if (this.recognition === rec) {
-                  this.recognition = null;
-                  const Ctor = getRecognitionCtor();
-                  if (Ctor) this.startRecognition(Ctor);
-                }
-              }
+            if ((this.phase === "listening" || this.standby) && !this.finishing && !this.recognition) {
+              const Ctor = getRecognitionCtor();
+              if (Ctor) this.startRecognition(Ctor);
             }
           }, 150);
         }
@@ -692,7 +713,15 @@ export class VoiceEngine {
     } catch (err) {
       vlog("recogniser-error", { error: String(err).slice(0, 120) });
       console.warn("[Aether Voice] Recognition start error:", err);
-      if (!this.standby) this.recognitionFailed = true;
+      this.recognition = null;
+      if (this.standby || this.phase === "listening") {
+        setTimeout(() => {
+          if ((this.standby || this.phase === "listening") && !this.recognition && !this.finishing) {
+            const C = getRecognitionCtor();
+            if (C) this.startRecognition(C);
+          }
+        }, 1000);
+      }
     }
   }
 
@@ -786,10 +815,7 @@ export class VoiceEngine {
       return;
     }
     if (this.recognition && this.heardSpeech) {
-      // speech was clearly heard but the recogniser returned nothing: stop relying on it
-      vlog("recogniser-silent", { note: "speech heard but no words; switching to Whisper" });
-      this.recognitionFailed = true;
-      voiceStore.set({ sttEngine: "server" });
+      vlog("recogniser-silent", { note: "speech heard but no words; transcribing turn with Whisper" });
     }
     if (this.recognition) {
       const rec = this.recognition;
