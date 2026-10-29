@@ -27,9 +27,9 @@ export interface AetherCommandBarProps {
 }
 
 const DEFAULT_PROMPTS = [
-  "AAPL closing price & volume on 2020-04-01",
-  "What happened on the next trading day?",
-  "Summarise the AAPL records archive",
+  "Summarise uploaded financial statements",
+  "Compare portfolio balances across periods",
+  "Extract tax distributions & franking credits",
 ];
 
 export function AetherCommandBar({

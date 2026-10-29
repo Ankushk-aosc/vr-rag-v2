@@ -80,7 +80,7 @@ def _to_floats(vec) -> List[float]:
     return [float(x) for x in vec]
 
 
-def embed_texts(texts: List[str]) -> List[List[float]]:
+def embed_texts(texts: List[str], allow_fallback: bool = False) -> List[List[float]]:
     if not texts:
         return []
     model = get_embedding_model()
@@ -89,14 +89,26 @@ def embed_texts(texts: List[str]) -> List[List[float]]:
             return [_to_floats(e) for e in model.embed(texts)]
         except Exception as e:
             logger.error("Embedding batch failed: %s", e)
+            if not allow_fallback:
+                raise RuntimeError(f"Embedding generation failed: {e}")
+    if not allow_fallback:
+        raise RuntimeError(
+            "Embedding model is unavailable. Ingestion cannot proceed with ungrounded fallback vectors."
+        )
     return [_deterministic_vector(t, settings.EMBEDDING_DIMENSION) for t in texts]
 
 
-def embed_query(query: str) -> List[float]:
+def embed_query(query: str, allow_fallback: bool = False) -> List[float]:
     model = get_embedding_model()
     if model:
         try:
             return _to_floats(next(iter(model.embed([query]))))
         except Exception as e:
             logger.error("Query embedding failed: %s", e)
+            if not allow_fallback:
+                raise RuntimeError(f"Query embedding generation failed: {e}")
+    if not allow_fallback:
+        raise RuntimeError(
+            "Embedding model is unavailable. Semantic search aborted to prevent noisy retrieval."
+        )
     return _deterministic_vector(query, settings.EMBEDDING_DIMENSION)

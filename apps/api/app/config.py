@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import Optional
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,6 +18,18 @@ class Settings(BaseSettings):
     SQLITE_DB_PATH: str = "data/app.db"
     UPLOADS_DIR: str = "data/uploads"
     MAX_FILE_SIZE_MB: int = 100
+
+    @model_validator(mode="after")
+    def validate_production_security(self) -> "Settings":
+        env = (self.ENVIRONMENT or "").strip().lower()
+        if env not in ("development", "test", "testing"):
+            if self.APP_SECRET_KEY == "dev-insecure-key-change-in-production" or len(self.APP_SECRET_KEY) < 32:
+                raise ValueError(
+                    "CRITICAL SECURITY CONFIGURATION ERROR: In production and staging environments, "
+                    "APP_SECRET_KEY must be a secure, cryptographically random key containing at least 32 characters. "
+                    "Default or short secrets are strictly forbidden."
+                )
+        return self
 
 
     # Pinecone

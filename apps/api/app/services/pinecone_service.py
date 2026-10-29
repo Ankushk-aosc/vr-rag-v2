@@ -243,7 +243,7 @@ def save_document_to_pinecone(doc: Dict[str, Any]) -> None:
 
 def list_documents_from_pinecone(family_entity_id: str = "default_family") -> List[Dict[str, Any]]:
     """
-    Retrieves all registered documents from Pinecone cloud storage.
+    Retrieves registered documents from Pinecone cloud storage strictly scoped to family entity.
     """
     index = get_index()
     unit_vec = [1.0] + [0.0] * (settings.EMBEDDING_DIMENSION - 1)
@@ -257,7 +257,7 @@ def list_documents_from_pinecone(family_entity_id: str = "default_family") -> Li
         docs = []
         for match in _field(res, "matches", []) or []:
             meta = dict(_field(match, "metadata", {}) or {})
-            if meta.get("family_entity_id") == family_entity_id or family_entity_id == "*":
+            if family_entity_id and meta.get("family_entity_id") == family_entity_id:
                 docs.append(_hydrate_doc_meta(meta))
         return docs
     except Exception as e:
@@ -280,71 +280,42 @@ def get_document_from_pinecone(doc_id: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+def delete_document_from_pinecone(doc_id: str, family_entity_id: str = "default_family") -> None:
+    """
+    Deletes document registry record and all associated vector chunks from Pinecone.
+    """
+    index = get_index()
+    # 1. Delete document metadata record from registry namespace
+    try:
+        index.delete(ids=[doc_id], namespace=DOCUMENTS_REGISTRY_NAMESPACE)
+    except Exception as e:
+        logger.warning(f"Error deleting doc metadata {doc_id} from Pinecone registry: {e}")
+
+    # 2. Delete chunk vectors from default namespace
+    try:
+        index.delete(filter={"document_id": doc_id})
+    except Exception as e:
+        logger.warning(f"Error deleting vectors for document {doc_id} from Pinecone: {e}")
+
+    # 3. Invalidate document name cache
+    global _doc_name_cache, _doc_name_cache_at
+    _doc_name_cache.pop(doc_id, None)
+
+
 _doc_name_cache: Dict[str, str] = {}
 _doc_name_cache_at = 0.0
 
 
-def get_document_names(force: bool = False) -> Dict[str, str]:
-    """document_id -> original filename, cached for 5 minutes (chunk metadata often lacks names)."""
-    global _doc_name_cache, _doc_name_cache_at
-    if force or not _doc_name_cache or time.time() - _doc_name_cache_at > 300:
-        try:
-            docs = list_documents_from_pinecone("*")
-            _doc_name_cache = {
-                str(d.get("id")): str(d.get("original_name") or d.get("filename") or "")
-                for d in docs if d.get("id")
-            }
-            _doc_name_cache_at = time.time()
-        except Exception as e:
-            logger.warning("Could not refresh document name cache: %s", e)
-    return _doc_name_cache
-
-
-# --- Cloud-Native Users Registry in Pinecone ---
-
-USERS_REGISTRY_NAMESPACE = "users_registry"
-
-
-def save_user_to_pinecone(user: Dict[str, Any]) -> None:
+def get_document_names(family_entity_id: Optional[str] = None, force: bool = False) -> Dict[str, str]:
     """
-    Stores user credentials and roles directly in Pinecone's users_registry namespace.
-    Zero local database dependence.
+    Retrieves document_id -> original filename mapping from transactional system of record.
+    Prevents truncation and cross-tenant leakage.
     """
-    index = get_index()
-    unit_vec = [1.0] + [0.0] * (settings.EMBEDDING_DIMENSION - 1)
-    user_id = str(user["id"])
-    email = str(user.get("email", "")).lower()
-    
-    metadata = {
-        "id": user_id,
-        "email": email,
-        "hashed_password": str(user.get("hashed_password", "")),
-        "full_name": str(user.get("full_name", "")),
-        "role": str(user.get("role", "family_admin")),
-        "family_entity_id": str(user.get("family_entity_id", "default_family"))
-    }
-    
-    records = [{"id": user_id, "values": unit_vec, "metadata": metadata}]
-    if email:
-        records.append({"id": f"email_{email}", "values": unit_vec, "metadata": metadata})
-        
-    index.upsert(vectors=records, namespace=USERS_REGISTRY_NAMESPACE)
-
-
-def get_user_from_pinecone(user_id_or_email: str) -> Optional[Dict[str, Any]]:
-    """
-    Fetches a user account record from Pinecone users_registry by user ID or email address.
-    """
-    index = get_index()
-    key = user_id_or_email.lower()
-    lookup_id = f"email_{key}" if "@" in key else user_id_or_email
+    from app.db import sqlite
     try:
-        res = index.fetch(ids=[lookup_id], namespace=USERS_REGISTRY_NAMESPACE)
-        vectors = _field(res, "vectors", {}) or {}
-        meta = _field(vectors.get(lookup_id), "metadata")
-        return dict(meta) if meta else None
+        return sqlite.get_document_names(family_entity_id=family_entity_id)
     except Exception as e:
-        logger.error(f"Error fetching user from Pinecone: {e}")
-        return None
+        logger.warning("Could not fetch document names from SQLite: %s", e)
+        return {}
 
 

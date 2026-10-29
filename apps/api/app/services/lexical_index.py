@@ -1,12 +1,9 @@
 """
-In-memory BM25 keyword index over every chunk stored in Pinecone metadata.
+Tenant-Partitioned In-Memory BM25 Keyword Index.
+Resolves Audit ID: R10.
 
-Dense MiniLM embeddings are poor at exact tokens (dates, tickers, row numbers, amounts),
-which dominate tabular financial records. This index supplies the lexical half of a hybrid
-retriever; results are fused with Pinecone similarity results in rag_engine.
-
-The corpus is pulled from Pinecone once in a background thread and cached to
-data/lexical_index.json, keyed by the vector count so a restart does not refetch it.
+Supplies the lexical half of hybrid retrieval partitioned strictly by family_entity_id.
+Avoids multi-tenant plaintext pooling and preserves tenant data boundaries both in memory and on disk.
 """
 import json
 import logging
@@ -16,13 +13,13 @@ import threading
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-CACHE_PATH = Path(settings.SQLITE_DB_PATH).parent / "lexical_index.json"
+LEXICAL_DIR = Path(settings.SQLITE_DB_PATH).parent / "lexical"
 
 STOPWORDS = {
     "a", "an", "and", "are", "as", "at", "be", "by", "can", "did", "do", "does", "for", "from",
@@ -83,21 +80,17 @@ def tokenize(text: str) -> List[str]:
     return tokens
 
 
-class LexicalIndex:
-    def __init__(self) -> None:
-        self._lock = threading.RLock()
+class TenantPartition:
+    """Isolated BM25 index corpus for a single family entity."""
+
+    def __init__(self, family_entity_id: str) -> None:
+        self.family_entity_id = family_entity_id
         self.chunks: List[Dict[str, Any]] = []
         self.postings: Dict[str, List[tuple]] = defaultdict(list)
         self.doc_len: List[int] = []
-        self.avg_len = 1.0
-        self.ready = False
-        self.building = False
-        self.error: Optional[str] = None
-        # bumped whenever the corpus changes, so derived caches (datasets) know to rebuild
-        self.version = 0
+        self.avg_len: float = 1.0
 
-    # ---------- construction ----------
-    def _rebuild_postings(self) -> None:
+    def rebuild_postings(self) -> None:
         postings: Dict[str, List[tuple]] = defaultdict(list)
         doc_len: List[int] = []
         for i, c in enumerate(self.chunks):
@@ -109,27 +102,134 @@ class LexicalIndex:
         self.doc_len = doc_len
         self.avg_len = (sum(doc_len) / len(doc_len)) if doc_len else 1.0
 
+    def search(
+        self,
+        q_tokens: List[str],
+        user_roles: List[str],
+        top_k: int = 20,
+        required_tokens: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        if not self.chunks:
+            return []
+        n_docs = len(self.chunks)
+        k1, b = 1.4, 0.75
+        scores: Dict[int, float] = defaultdict(float)
+        for tok in q_tokens:
+            plist = self.postings.get(tok)
+            if not plist:
+                continue
+            idf = math.log(1 + (n_docs - len(plist) + 0.5) / (len(plist) + 0.5))
+            weight = 3.0 if ISO_DATE_RE.fullmatch(tok) else 1.0
+            for i, tf in plist:
+                norm = tf * (k1 + 1) / (tf + k1 * (1 - b + b * self.doc_len[i] / self.avg_len))
+                scores[i] += weight * idf * norm
+
+        role_set = set(user_roles)
+        results = []
+        for i, s in sorted(scores.items(), key=lambda kv: kv[1], reverse=True):
+            c = self.chunks[i]
+            if role_set and not role_set.intersection(c.get("allowed_roles") or []):
+                continue
+            if required_tokens and not all(t in c.get("text", "") for t in required_tokens):
+                continue
+            results.append({**c, "lexical_score": s})
+            if len(results) >= top_k:
+                break
+        return results
+
+
+class LexicalIndex:
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._partitions: Dict[str, TenantPartition] = {}
+        self.ready = False
+        self.building = False
+        self.error: Optional[str] = None
+        self.version = 0
+
+    @property
+    def chunks(self) -> List[Dict[str, Any]]:
+        """Compatibility property returning all partitioned chunks."""
+        with self._lock:
+            all_c = []
+            for p in self._partitions.values():
+                all_c.extend(p.chunks)
+            return all_c
+
+    def _save_tenant_cache(self, family_entity_id: str, vector_count: Optional[int] = None) -> None:
+        try:
+            LEXICAL_DIR.mkdir(parents=True, exist_ok=True)
+            partition = self._partitions.get(family_entity_id)
+            if not partition:
+                return
+            cache_file = LEXICAL_DIR / f"lexical_{family_entity_id}.json"
+            payload = {
+                "family_entity_id": family_entity_id,
+                "vector_count": vector_count,
+                "saved_at": time.time(),
+                "chunks": partition.chunks
+            }
+            tmp = cache_file.with_suffix(".tmp")
+            tmp.write_text(json.dumps(payload), encoding="utf-8")
+            tmp.replace(cache_file)
+        except Exception as e:
+            logger.warning(f"Could not persist lexical cache for tenant {family_entity_id}: {e}")
+
     def load_chunks(self, chunks: List[Dict[str, Any]]) -> None:
         with self._lock:
-            self.chunks = chunks
-            self._rebuild_postings()
+            self._partitions.clear()
+            for c in chunks:
+                tenant_id = c.get("family_entity_id") or "default_family"
+                partition = self._partitions.setdefault(tenant_id, TenantPartition(tenant_id))
+                partition.chunks.append(c)
+            for partition in self._partitions.values():
+                partition.rebuild_postings()
             self.ready = True
             self.version += 1
 
     def add_chunks(self, chunks: List[Dict[str, Any]]) -> None:
         with self._lock:
-            existing = {c["chunk_id"] for c in self.chunks}
-            self.chunks.extend(c for c in chunks if c["chunk_id"] not in existing)
-            self._rebuild_postings()
+            affected_tenants: Set[str] = set()
+            for c in chunks:
+                tenant_id = c.get("family_entity_id") or "default_family"
+                partition = self._partitions.setdefault(tenant_id, TenantPartition(tenant_id))
+                existing = {x["chunk_id"] for x in partition.chunks}
+                if c["chunk_id"] not in existing:
+                    partition.chunks.append(c)
+                    affected_tenants.add(tenant_id)
+
+            for tenant_id in affected_tenants:
+                self._partitions[tenant_id].rebuild_postings()
+                self._save_tenant_cache(tenant_id)
+
             self.ready = True
             self.version += 1
-        self._save_cache(vector_count=None)
 
-    def snapshot(self) -> List[Dict[str, Any]]:
+    def delete_document_chunks(self, document_id: str) -> None:
         with self._lock:
-            return list(self.chunks)
+            affected_tenants: Set[str] = set()
+            for tenant_id, partition in self._partitions.items():
+                orig_len = len(partition.chunks)
+                partition.chunks = [c for c in partition.chunks if c.get("document_id") != document_id]
+                if len(partition.chunks) != orig_len:
+                    partition.rebuild_postings()
+                    affected_tenants.add(tenant_id)
 
-    # ---------- search ----------
+            for tenant_id in affected_tenants:
+                self._save_tenant_cache(tenant_id)
+
+            self.version += 1
+
+    def snapshot(self, family_entity_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        with self._lock:
+            if family_entity_id:
+                partition = self._partitions.get(family_entity_id)
+                return list(partition.chunks) if partition else []
+            all_chunks = []
+            for p in self._partitions.values():
+                all_chunks.extend(p.chunks)
+            return all_chunks
+
     def search(
         self,
         query: str,
@@ -143,74 +243,41 @@ class LexicalIndex:
         q_tokens = list(dict.fromkeys(tokenize(query) + (required_tokens or [])))
         if not q_tokens:
             return []
-        n_docs = len(self.chunks)
-        k1, b = 1.4, 0.75
-        scores: Dict[int, float] = defaultdict(float)
         with self._lock:
-            for tok in q_tokens:
-                plist = self.postings.get(tok)
-                if not plist:
-                    continue
-                idf = math.log(1 + (n_docs - len(plist) + 0.5) / (len(plist) + 0.5))
-                # exact dates are by far the most discriminative signal in ledger data
-                weight = 3.0 if ISO_DATE_RE.fullmatch(tok) else 1.0
-                for i, tf in plist:
-                    norm = tf * (k1 + 1) / (tf + k1 * (1 - b + b * self.doc_len[i] / self.avg_len))
-                    scores[i] += weight * idf * norm
-            role_set = set(user_roles)
-            results = []
-            for i, s in sorted(scores.items(), key=lambda kv: kv[1], reverse=True):
-                c = self.chunks[i]
-                if c.get("family_entity_id") != family_entity_id:
-                    continue
-                if role_set and not role_set.intersection(c.get("allowed_roles") or []):
-                    continue
-                if required_tokens and not all(t in c.get("text", "") for t in required_tokens):
-                    continue
-                results.append({**c, "lexical_score": s})
-                if len(results) >= top_k:
-                    break
-        return results
+            partition = self._partitions.get(family_entity_id)
+            if not partition:
+                return []
+            return partition.search(q_tokens, user_roles, top_k, required_tokens)
 
-    # ---------- persistence ----------
-    def _save_cache(self, vector_count: Optional[int]) -> None:
-        try:
-            CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-            with self._lock:
-                payload = {"vector_count": vector_count, "saved_at": time.time(), "chunks": self.chunks}
-            tmp = CACHE_PATH.with_suffix(".tmp")
-            tmp.write_text(json.dumps(payload), encoding="utf-8")
-            tmp.replace(CACHE_PATH)
-        except Exception as e:
-            logger.warning("Could not persist lexical index cache: %s", e)
-
-    def _load_cache(self) -> Optional[int]:
-        if not CACHE_PATH.exists():
-            return None
-        try:
-            payload = json.loads(CACHE_PATH.read_text(encoding="utf-8"))
-            self.load_chunks(payload.get("chunks", []))
-            logger.info("Lexical index loaded %d chunks from cache", len(self.chunks))
-            return payload.get("vector_count")
-        except Exception as e:
-            logger.warning("Lexical index cache unreadable: %s", e)
-            return None
+    def _load_all_caches(self) -> int:
+        if not LEXICAL_DIR.exists():
+            return 0
+        total_loaded = 0
+        for cache_file in LEXICAL_DIR.glob("lexical_*.json"):
+            try:
+                data = json.loads(cache_file.read_text(encoding="utf-8"))
+                tenant_id = data.get("family_entity_id") or cache_file.stem.replace("lexical_", "")
+                chunks = data.get("chunks", [])
+                partition = self._partitions.setdefault(tenant_id, TenantPartition(tenant_id))
+                partition.chunks = chunks
+                partition.rebuild_postings()
+                total_loaded += len(chunks)
+            except Exception as e:
+                logger.warning(f"Failed to load lexical cache {cache_file}: {e}")
+        return total_loaded
 
     def build_from_pinecone(self) -> None:
-        """Pull every default-namespace chunk from Pinecone. Safe to call from a thread."""
+        """Pull every default-namespace chunk from Pinecone into tenant partitions."""
         from app.services import pinecone_service
 
         self.building = True
         try:
-            cached_count = self._load_cache()
-            index = pinecone_service.get_index()
-            stats = index.describe_index_stats()
-            ns = getattr(stats, "namespaces", None) or {}
-            default_ns = ns.get("__default__") or ns.get("")
-            live_count = getattr(default_ns, "vector_count", None) if default_ns else None
-            if self.ready and cached_count is not None and cached_count == live_count:
-                return
+            cached_chunks = self._load_all_caches()
+            if cached_chunks > 0:
+                self.ready = True
+                logger.info("Loaded %d partitioned lexical chunks from disk caches.", cached_chunks)
 
+            index = pinecone_service.get_index()
             ids: List[str] = []
             for page in index.list(limit=100):
                 vectors = getattr(page, "vectors", None) or []
@@ -234,9 +301,11 @@ class LexicalIndex:
                         "original_name": meta.get("original_name") or "",
                         "text": text,
                     })
-            self.load_chunks(chunks)
-            self._save_cache(vector_count=live_count)
-            logger.info("Lexical index built with %d chunks from Pinecone", len(chunks))
+            if chunks:
+                self.load_chunks(chunks)
+                for tenant_id in self._partitions:
+                    self._save_tenant_cache(tenant_id)
+                logger.info("Partitioned lexical index built with %d chunks across %d tenants", len(chunks), len(self._partitions))
         except Exception as e:
             self.error = str(e)
             logger.error("Lexical index build failed: %s", e)

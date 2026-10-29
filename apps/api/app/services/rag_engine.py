@@ -15,11 +15,17 @@ import asyncio
 import logging
 import re
 import time
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional, Set
 
 from app.config import settings
 from app.services import embeddings, pinecone_service
 from app.services.lexical_index import extract_dates, lexical_index
+from app.services.prompt_guard import (
+    escape_evidence_text,
+    escape_xml_attribute,
+    sanitize_conversation_history,
+)
+from app.services.grounding import verify_grounding
 
 logger = logging.getLogger(__name__)
 
@@ -141,17 +147,24 @@ def _fuse(
 
     for entry in pool.values():
         if dates and any(d in entry.get("text", "") for d in dates):
-            entry["fused"] += 1.0  # an exact date hit beats any similarity score
+            entry["fused"] += 0.05  # Calibrated exact date boost (Audit ID: R8)
         if len(entry.get("text", "").strip()) < 40:
             entry["fused"] *= 0.3  # headings / separators carry no evidence
 
     ranked = sorted(pool.values(), key=lambda e: e["fused"], reverse=True)
     picked: List[Dict[str, Any]] = []
     per_doc: Dict[str, int] = {}
+    seen_hashes: Set[str] = set()
+
     for e in ranked:
         doc = e.get("document_id", "")
         if per_doc.get(doc, 0) >= 3:
             continue
+        # Content-hash deduplication across formats (Audit ID: R8)
+        content_snippet = " ".join(e.get("text", "").split())[:300].lower()
+        if content_snippet in seen_hashes:
+            continue
+        seen_hashes.add(content_snippet)
         per_doc[doc] = per_doc.get(doc, 0) + 1
         picked.append(e)
         if len(picked) >= top_k:
@@ -383,16 +396,22 @@ async def stream_rag_events(
         return
 
     def build_messages(n_passages: int, n_history: int) -> List[Dict[str, str]]:
-        evidence = "\n\n".join(
-            f"<evidence id=\"{c['ref']}\" source=\"{c['document_name']}\" page=\"{c['page_number']}\">\n"
-            f"{p.get('text', '')}\n</evidence>"
-            for c, p in list(zip(citations, passages))[:n_passages]
-        ) or "<evidence>No matching passages were retrieved.</evidence>"
+        evidence_blocks = []
+        for c, p in list(zip(citations, passages))[:n_passages]:
+            safe_source = escape_xml_attribute(c.get("document_name", "Document"))
+            safe_content = escape_evidence_text(p.get("text", ""))
+            evidence_blocks.append(
+                f'<evidence id="{c["ref"]}" source="{safe_source}" page="{c["page_number"]}">\n'
+                f"{safe_content}\n</evidence>"
+            )
+
+        evidence = "\n\n".join(evidence_blocks) or "<evidence>No matching passages were retrieved.</evidence>"
         user_turn = (
             f"{evidence}\n\nQuestion: {question}\n\n"
             f"{VOICE_FORMAT if mode == 'voice' else TEXT_FORMAT}"
         )
-        past = history[-n_history:] if n_history else []
+        safe_history = sanitize_conversation_history(history)
+        past = safe_history[-n_history:] if n_history else []
         return [{"role": "system", "content": SYSTEM_PROMPT}, *past, {"role": "user", "content": user_turn}]
 
     t3 = time.perf_counter()
@@ -467,12 +486,14 @@ async def stream_rag_events(
     yield finish(_stage("answer", "Writing the answer", "done", f"{len(answer_text.split())} words",
                         int((time.perf_counter() - reason_done_at) * 1000)))
 
-    referenced = {int(n) for n in re.findall(r"\[(\d+)\]", answer_text)}
-    if mode == "voice":
-        shown = citations  # spoken answers carry no [n] markers; show what was retrieved
-    else:
-        shown = [c for c in citations if c["ref"] in referenced]
-    grounded = bool(shown) and NOT_FOUND_PHRASE not in answer_text.lower()
+    grounding_eval = verify_grounding(
+        answer=answer_text,
+        citations=citations,
+        mode=mode,
+        not_found_phrase=NOT_FOUND_PHRASE
+    )
+    shown = grounding_eval["valid_citations"] if mode != "voice" else citations
+
     yield {
         "type": "done",
         "answer": answer_text,
@@ -480,8 +501,11 @@ async def stream_rag_events(
         "structured_data": parse_structured_answer(answer_text) if mode != "voice" else None,
         "thinking_trace": trace,
         "citations": shown,
-        "referenced": sorted(referenced),
-        "grounded": grounded,
+        "referenced": grounding_eval["referenced_citations"],
+        "grounded": grounding_eval["grounded"],
+        "unverified_numeric_claims": grounding_eval["unverified_numeric_claims"],
+        "numeric_claim_accuracy": grounding_eval["numeric_claim_accuracy"],
+        "grounding_warning": grounding_eval["warning"],
         "currency": settings.DEFAULT_CURRENCY,
         "total_latency_ms": int((time.perf_counter() - start) * 1000),
         "disclaimer": DISCLAIMER,

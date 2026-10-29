@@ -4,7 +4,9 @@ A sovereign, voice-first spatial financial intelligence pavilion for Australian 
 
 ## Key Highlights
 - **Jurisdiction & Compliance:** Tailored for Australia (Cth). Adheres to Australian Privacy Principles (APPs under the Privacy Act 1988) and ASIC RG 244 factual disclaimers.
-- **Privacy-Preserving Hybrid Architecture:** Only anonymous vector embeddings and chunk ID pointers are sent to Pinecone. Sensitive raw tax returns, bank statements, names, and account numbers remain strictly on your local machine in SQLite.
+- **Hybrid Sovereign Architecture & APP 8 Cross-Border Disclosure:**
+  - **Local Persistence:** Original uploaded files, relational tenancy metadata, user credentials, audit trails, and isolated BM25 lexical search indices are persisted locally on-premise (`data/app.db`, `data/uploads`, `data/lexical`).
+  - **Cloud Services (APP 8 Notice):** To perform semantic retrieval and AI reasoning, mathematical embeddings, chunk text, and metadata are indexed in Pinecone Serverless (AWS `us-east-1`, United States). RAG synthesis queries and evidence excerpts are processed via Groq Cloud LLM APIs. Voice audio is transcribed via Groq Whisper and speech synthesized via Microsoft Edge-TTS. Operators must maintain client consent and Data Processing Agreements (DPAs) in accordance with APP 8.
 - **3D Spatial Evidence Room + "View in VR":** Features an interactive 3D spatial room on desktop and mobile browsers, with a "View in VR" toggle that seamlessly enters WebXR 6DoF on Meta Quest 3 and Apple Vision Pro, plus split-screen Cardboard stereoscopic mode with gyroscope tracking.
 - **Voice-Reactive Particle Orb:** Features a central concentric gyroscopic ring with an embedded 3D particle soundwave mesh that transforms dynamically during speech.
 - **Cross-Platform Suite:**

@@ -1,7 +1,9 @@
 import logging
 import threading
+import uuid
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, status
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.db import sqlite
@@ -59,6 +61,23 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Global structured error handler with correlation ID (Audit S14)
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    correlation_id = str(uuid.uuid4())
+    logging.getLogger("main").error(
+        "Unhandled server error [%s] on %s %s: %s",
+        correlation_id, request.method, request.url.path, exc, exc_info=True
+    )
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={
+            "detail": "An internal server error occurred. Please contact system administrator.",
+            "correlation_id": correlation_id
+        }
+    )
+
 
 # Include routers
 app.include_router(auth.router)

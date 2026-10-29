@@ -17,7 +17,7 @@ class DashboardRequest(BaseModel):
 @router.post("")
 async def create_dashboard(
     request: DashboardRequest,
-    current_user: Optional[Dict[str, Any]] = Depends(auth.get_current_user_optional),
+    current_user: Dict[str, Any] = Depends(auth.get_current_user),
 ):
     """
     Build a dashboard (KPI tiles + charts) for a question. Values are computed from the tables in

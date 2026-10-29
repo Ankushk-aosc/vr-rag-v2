@@ -4,31 +4,33 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from app.schemas.query import QueryRequest, QueryResponse
 from app.services import auth, rag_engine
+from app.middleware.rate_limiter import rate_limit
 
 router = APIRouter(prefix="/api/query", tags=["Query"])
 
 
-def resolve_roles(family_entity_id: str, current_user: Optional[Dict[str, Any]]) -> List[str]:
-    user_roles = ["family_admin", "family_member"]
-    # Scope permissions if user is authenticated
-    if current_user and current_user.get("memberships"):
-        matched_roles = [
-            m["role"] for m in current_user["memberships"]
-            if m["family_entity_id"] == family_entity_id
-        ]
-        if not matched_roles:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"You do not hold active membership in family entity '{family_entity_id}'."
-            )
-        user_roles = matched_roles
-    return user_roles
+def resolve_roles(family_entity_id: str, current_user: Dict[str, Any]) -> List[str]:
+    if not current_user or not current_user.get("memberships"):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required. Please provide a valid Bearer token."
+        )
+    matched_roles = [
+        m["role"] for m in current_user["memberships"]
+        if m["family_entity_id"] == family_entity_id
+    ]
+    if not matched_roles:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Access denied: You do not hold active membership in family entity '{family_entity_id}'."
+        )
+    return matched_roles
 
 
-@router.post("", response_model=QueryResponse)
+@router.post("", response_model=QueryResponse, dependencies=[Depends(rate_limit(max_requests=45, window_seconds=60))])
 async def ask_question(
     request: QueryRequest,
-    current_user: Optional[Dict[str, Any]] = Depends(auth.get_current_user_optional)
+    current_user: Dict[str, Any] = Depends(auth.get_current_user)
 ):
     user_roles = resolve_roles(request.family_entity_id, current_user)
     try:
@@ -52,10 +54,10 @@ async def ask_question(
         )
 
 
-@router.post("/stream")
+@router.post("/stream", dependencies=[Depends(rate_limit(max_requests=45, window_seconds=60))])
 async def ask_question_stream(
     request: QueryRequest,
-    current_user: Optional[Dict[str, Any]] = Depends(auth.get_current_user_optional)
+    current_user: Dict[str, Any] = Depends(auth.get_current_user)
 ):
     """
     Server-Sent Events stream of the RAG pipeline. Each `data:` line is a JSON event:

@@ -71,9 +71,9 @@ function getFormatStyle(ext: string): FormatStyle {
 export function createDocTexture(
   doc: DocumentRecord | null,
   isLight: boolean,
-  fallbackTitle: string = "AAPL Financial Ledger",
-  fallbackSub: string = "11,558 Rows • AUD Synthesized",
-  fallbackCode: string = "AAPL • FY20-24"
+  fallbackTitle: string = "Financial Ledger",
+  fallbackSub: string = "Records Archive",
+  fallbackCode: string = "DOC • ARCHIVE"
 ): THREE.CanvasTexture {
   const canvas = document.createElement("canvas");
   // drawn in 512x724 units at 3x supersampling resolution (1536x2172) so text stays crystal-sharp
@@ -448,66 +448,4 @@ export function createDocTexture(
   return texture;
 }
 
-export const DEFAULT_SPATIAL_DOCS: DocumentRecord[] = [
-  {
-    id: "doc-1",
-    filename: "AAPL_financial_data_11558_rows.xlsx",
-    original_name: "AAPL_financial_data_11558_rows.xlsx",
-    mime_type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    file_size: 539573,
-    file_hash: "2af8528614ef4900a6e0b3c5825bc5e5",
-    total_pages: 2,
-    family_entity_id: "default_family",
-    status: "indexed",
-    uploaded_at: "",
-  },
-  {
-    id: "doc-2",
-    filename: "AAPL_financial_data_11558_rows.pdf",
-    original_name: "AAPL_financial_data_11558_rows.pdf",
-    mime_type: "application/pdf",
-    file_size: 940280,
-    file_hash: "cf9d93ed806e478fb18bc298d871be84",
-    total_pages: 233,
-    family_entity_id: "default_family",
-    status: "indexed",
-    uploaded_at: "",
-  },
-  {
-    id: "doc-3",
-    filename: "AAPL_financial_data_11558_rows.csv",
-    original_name: "AAPL_financial_data_11558_rows.csv",
-    mime_type: "text/csv",
-    file_size: 710536,
-    file_hash: "d2be779e1f104f279c13e51240a1b6ca",
-    total_pages: 232,
-    family_entity_id: "default_family",
-    status: "indexed",
-    uploaded_at: "",
-  },
-  {
-    id: "doc-4",
-    filename: "AAPL_financial_data_11558_rows.docx",
-    original_name: "AAPL_financial_data_11558_rows.docx",
-    mime_type: "application/docx",
-    file_size: 346220,
-    file_hash: "af7556c576aba4749f1b21396a84cbb0",
-    total_pages: 1,
-    family_entity_id: "default_family",
-    status: "indexed",
-    uploaded_at: "",
-  },
-  {
-    id: "doc-5",
-    filename: "AAPL_financial_data_11558_rows.txt",
-    original_name: "AAPL_financial_data_11558_rows.txt",
-    mime_type: "text/plain",
-    file_size: 719771,
-    file_hash: "d09437ff9af64f5095ce56a4297c55b7",
-    total_pages: 1,
-    family_entity_id: "default_family",
-    status: "indexed",
-    uploaded_at: "",
-  },
-];
 

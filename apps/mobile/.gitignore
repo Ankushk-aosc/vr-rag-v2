@@ -33,6 +33,9 @@ yarn-error.*
 # local env files
 .env*.local
 
+# Dev QR codes with sensitive LAN IPs
+expo_qr.*
+
 # typescript
 *.tsbuildinfo
 

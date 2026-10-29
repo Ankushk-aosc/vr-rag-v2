@@ -21,8 +21,9 @@ _groq_stt_last_error: Optional[str] = None
 
 # Biases Whisper toward the vocabulary these documents use
 STT_VOCAB_PROMPT = (
-    "Financial question about Apple AAPL, NASDAQ, ASX, superannuation, franking credits, ATO, "
-    "closing price, opening price, trading volume, dividends, AUD, FY2024."
+    "Financial question about Australian equities, ASX, portfolio holdings, superannuation, "
+    "franking credits, ATO, tax statements, family trust balances, dividends, capital gains, "
+    "closing price, opening price, trading volume, AUD balances, FY2024, and accounting ledgers."
 )
 
 SILENCE_HALLUCINATIONS = {

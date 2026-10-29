@@ -43,8 +43,20 @@ function MarkdownImpl({ text, citations = [], onCitationClick, theme = "light", 
           </button>
         );
       }
+      // U2: Enforce strict protocol validation. Only https:// links are clickable.
+      // Prohibit javascript:, data:, file:, unencrypted http:, and invalid protocols.
+      if (!href) return <span>{children}</span>;
+      const isHttps = href.startsWith("https://");
+      if (!isHttps) {
+        return <span className="font-mono text-xs opacity-75">{children}</span>;
+      }
       return (
-        <a href={href} target="_blank" rel="noreferrer" className="underline decoration-dotted underline-offset-2">
+        <a
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="underline decoration-dotted underline-offset-2"
+        >
           {children}
         </a>
       );

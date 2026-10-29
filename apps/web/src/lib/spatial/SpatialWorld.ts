@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { Dashboard, DocumentRecord } from "../../types";
-import { createDocTexture, DEFAULT_SPATIAL_DOCS } from "../../components/docTextureHelper";
+import { createDocTexture } from "../../components/docTextureHelper";
 import { CanvasPanel } from "./CanvasPanel";
 import { Dashboard3D } from "./Dashboard3D";
 import { DraggableItem } from "./SpatialInteraction";
@@ -170,7 +170,7 @@ export class SpatialWorld {
   /** Rebuild only the document slabs (keeps the rest of the scene and its placements). */
   setDocuments(documents: DocumentRecord[]) {
     this.clearSlabs();
-    const docs = documents.length ? documents.slice(0, 6) : DEFAULT_SPATIAL_DOCS;
+    const docs = documents.slice(0, 6);
     const isLight = this.opts.theme === "light" && this.opts.environment === "pavilion";
     docs.forEach((doc, i) => {
       const tex = createDocTexture(doc, isLight, doc.original_name);

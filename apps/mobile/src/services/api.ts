@@ -1,9 +1,12 @@
 import { Platform } from "react-native";
 import { DocumentRecord, QueryResponse, VoiceQueryResponse } from "../types";
 
-// Default local dev backend host (machine LAN IP for Expo Go device connection)
-const DEFAULT_HOST = "http://192.168.1.127:8000";
+// Default backend host (configured via EXPO_PUBLIC_API_URL or platform standard localhost)
+const DEFAULT_HOST =
+  process.env.EXPO_PUBLIC_API_URL ||
+  (Platform.OS === "android" ? "http://10.0.2.2:8000" : "http://localhost:8000");
 let activeBaseUrl = DEFAULT_HOST;
+let activeAuthToken: string | null = null;
 
 export function getBaseUrl(): string {
   return activeBaseUrl;
@@ -13,12 +16,45 @@ export function setBaseUrl(url: string) {
   activeBaseUrl = url.replace(/\/+$/, "");
 }
 
+export function setAuthToken(token: string | null) {
+  activeAuthToken = token;
+}
+
+export function getAuthToken(): string | null {
+  return activeAuthToken;
+}
+
+export function getAuthHeaders(extraHeaders: Record<string, string> = {}): Record<string, string> {
+  const headers = { ...extraHeaders };
+  if (activeAuthToken) {
+    headers["Authorization"] = `Bearer ${activeAuthToken}`;
+  }
+  return headers;
+}
+
+export async function loginUser(email: string, password: string): Promise<any> {
+  const res = await fetch(`${activeBaseUrl}/api/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Login failed");
+  }
+  const data = await res.json();
+  setAuthToken(data.access_token);
+  return data;
+}
+
 export async function fetchDocuments(entityId?: string): Promise<DocumentRecord[]> {
   try {
     const url = entityId
       ? `${activeBaseUrl}/api/documents?family_entity_id=${encodeURIComponent(entityId)}`
       : `${activeBaseUrl}/api/documents`;
-    const res = await fetch(url);
+    const res = await fetch(url, {
+      headers: getAuthHeaders(),
+    });
     if (!res.ok) throw new Error(`HTTP ${res.status}: Failed to fetch documents`);
     const data = await res.json();
     return Array.isArray(data) ? data : (data.documents || []);
@@ -34,7 +70,7 @@ export async function queryAssistant(
 ): Promise<QueryResponse> {
   const res = await fetch(`${activeBaseUrl}/api/query`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: getAuthHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({
       question,
       family_entity_id: entityId,
@@ -68,9 +104,9 @@ export async function voiceAskAssistant(
   const res = await fetch(`${activeBaseUrl}/api/voice/ask`, {
     method: "POST",
     body: formData,
-    headers: {
+    headers: getAuthHeaders({
       "Content-Type": "multipart/form-data",
-    },
+    }),
   });
 
   if (!res.ok) {
@@ -102,14 +138,28 @@ export async function uploadDocument(
   const res = await fetch(`${activeBaseUrl}/api/documents/upload`, {
     method: "POST",
     body: formData,
-    headers: {
+    headers: getAuthHeaders({
       "Content-Type": "multipart/form-data",
-    },
+    }),
   });
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || "Upload failed");
+  }
+
+  return await res.json();
+}
+
+export async function deleteDocument(documentId: string): Promise<{ message: string; document_id: string }> {
+  const res = await fetch(`${activeBaseUrl}/api/documents/${encodeURIComponent(documentId)}`, {
+    method: "DELETE",
+    headers: getAuthHeaders(),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Document deletion failed");
   }
 
   return await res.json();

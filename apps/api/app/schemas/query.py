@@ -57,6 +57,9 @@ class QueryResponse(BaseModel):
     thinking_trace: List[ThinkingStageItem] = Field(default_factory=list)
     citations: List[CitationItem] = Field(default_factory=list)
     grounded: bool = True
+    unverified_numeric_claims: List[str] = Field(default_factory=list)
+    numeric_claim_accuracy: float = 1.0
+    grounding_warning: Optional[str] = None
     currency: str = "AUD"
     total_latency_ms: int = 0
     disclaimer: str = (

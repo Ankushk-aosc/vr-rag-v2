@@ -62,12 +62,13 @@ def init_db() -> None:
                 original_name TEXT NOT NULL,
                 mime_type TEXT NOT NULL,
                 file_size INTEGER NOT NULL,
-                file_hash TEXT NOT NULL UNIQUE,
+                file_hash TEXT NOT NULL,
                 total_pages INTEGER DEFAULT 1,
                 family_entity_id TEXT NOT NULL,
                 status TEXT DEFAULT 'indexed',
                 uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (family_entity_id) REFERENCES family_entities(id) ON DELETE CASCADE
+                FOREIGN KEY (family_entity_id) REFERENCES family_entities(id) ON DELETE CASCADE,
+                UNIQUE(family_entity_id, file_hash)
             );
         """)
 
@@ -103,10 +104,25 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS audit_events (
                 id TEXT PRIMARY KEY,
                 user_id TEXT,
+                family_entity_id TEXT,
                 action TEXT NOT NULL,
                 resource_id TEXT,
                 details TEXT,
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        cursor.execute("PRAGMA table_info(audit_events);")
+        audit_cols = [c[1] for c in cursor.fetchall()]
+        if "family_entity_id" not in audit_cols:
+            cursor.execute("ALTER TABLE audit_events ADD COLUMN family_entity_id TEXT;")
+
+        # Revoked Tokens (for session logout and token revocation)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS revoked_tokens (
+                jti TEXT PRIMARY KEY,
+                user_id TEXT,
+                revoked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                expires_at TIMESTAMP
             );
         """)
 
@@ -115,6 +131,8 @@ def init_db() -> None:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_chunks_page ON document_chunks(page_number);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_memberships_user ON memberships(user_id);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_doc_acl ON document_acl(document_id, family_entity_id);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_audit_family ON audit_events(family_entity_id);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_events(user_id);")
 
         # Seed default family entity
         cursor.execute("""
@@ -195,11 +213,21 @@ def get_user_memberships(user_id: str) -> List[Dict[str, Any]]:
 
 # --- Document & ACL Operations ---
 
+def get_document_by_hash(family_entity_id: str, file_hash: str) -> Optional[Dict[str, Any]]:
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM documents WHERE family_entity_id = ? AND file_hash = ?
+        """, (family_entity_id, file_hash))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+
 def insert_document(doc: Dict[str, Any]) -> None:
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT OR REPLACE INTO documents 
+            INSERT INTO documents 
             (id, filename, original_name, mime_type, file_size, file_hash, total_pages, family_entity_id, status)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
@@ -214,6 +242,15 @@ def insert_document(doc: Dict[str, Any]) -> None:
             doc.get("status", "indexed")
         ))
         conn.commit()
+
+
+def delete_document(document_id: str) -> bool:
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM documents WHERE id = ?", (document_id,))
+        deleted = cursor.rowcount > 0
+        conn.commit()
+        return deleted
 
 
 def insert_document_acl(document_id: str, family_entity_id: str, allowed_role: str) -> None:
@@ -307,20 +344,108 @@ def get_document_by_id(doc_id: str) -> Optional[Dict[str, Any]]:
         return dict(row) if row else None
 
 
+# --- Document Name Indexing ---
+
+def get_document_names(family_entity_id: Optional[str] = None) -> Dict[str, str]:
+    """Retrieves document_id -> name mapping scoped optionally by family entity."""
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        if family_entity_id:
+            cursor.execute("SELECT id, original_name, filename FROM documents WHERE family_entity_id = ?", (family_entity_id,))
+        else:
+            cursor.execute("SELECT id, original_name, filename FROM documents")
+        return {
+            row["id"]: row["original_name"] or row["filename"]
+            for row in cursor.fetchall()
+        }
+
+
 # --- Audit Logging ---
 
-def log_audit_event(action: str, user_id: Optional[str] = None, resource_id: Optional[str] = None, details: Optional[str] = None) -> None:
+def log_audit_event(
+    action: str,
+    user_id: Optional[str] = None,
+    family_entity_id: Optional[str] = None,
+    resource_id: Optional[str] = None,
+    details: Optional[str] = None
+) -> None:
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO audit_events (id, user_id, action, resource_id, details)
-            VALUES (?, ?, ?, ?, ?)
-        """, (str(uuid.uuid4()), user_id, action, resource_id, details))
+            INSERT INTO audit_events (id, user_id, family_entity_id, action, resource_id, details)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (str(uuid.uuid4()), user_id, family_entity_id, action, resource_id, details))
         conn.commit()
 
 
-def get_audit_events(limit: int = 50) -> List[Dict[str, Any]]:
+def get_audit_events_for_entities(entity_ids: List[str], limit: int = 50) -> List[Dict[str, Any]]:
+    if not entity_ids:
+        return []
+    placeholders = ",".join("?" for _ in entity_ids)
+    query = f"""
+        SELECT * FROM audit_events 
+        WHERE family_entity_id IN ({placeholders})
+        ORDER BY timestamp DESC LIMIT ?
+    """
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM audit_events ORDER BY timestamp DESC LIMIT ?", (limit,))
+        cursor.execute(query, (*entity_ids, limit))
         return [dict(r) for r in cursor.fetchall()]
+
+
+def get_audit_events_for_user(user_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM audit_events WHERE user_id = ? ORDER BY timestamp DESC LIMIT ?",
+            (user_id, limit)
+        )
+        return [dict(r) for r in cursor.fetchall()]
+
+
+def get_audit_events(limit: int = 50, family_entity_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        if family_entity_id:
+            cursor.execute(
+                "SELECT * FROM audit_events WHERE family_entity_id = ? ORDER BY timestamp DESC LIMIT ?",
+                (family_entity_id, limit)
+            )
+        else:
+            cursor.execute("SELECT * FROM audit_events ORDER BY timestamp DESC LIMIT ?", (limit,))
+        return [dict(r) for r in cursor.fetchall()]
+
+
+# --- Token Revocation & User Lifecycle ---
+
+def revoke_token(jti: str, user_id: str, expires_at: Optional[str] = None) -> None:
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT OR REPLACE INTO revoked_tokens (jti, user_id, expires_at)
+            VALUES (?, ?, ?)
+        """, (jti, user_id, expires_at))
+        conn.commit()
+
+
+def is_token_revoked(jti: str) -> bool:
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM revoked_tokens WHERE jti = ?", (jti,))
+        return cursor.fetchone() is not None
+
+
+def update_user_password(user_id: str, hashed_password: str) -> None:
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET hashed_password = ? WHERE id = ?", (hashed_password, user_id))
+        conn.commit()
+
+
+def delete_user_account(user_id: str) -> bool:
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        deleted = cursor.rowcount > 0
+        conn.commit()
+        return deleted

@@ -5,9 +5,31 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.config import settings
 from app.routers.documents import MAX_FILE_SIZE
+from app.services import auth
+from app.db import sqlite
 
 
 client = TestClient(app)
+
+@pytest.fixture(autouse=True)
+def setup_test_db(tmp_path, monkeypatch):
+    test_db = tmp_path / "test_upload_limit.db"
+    monkeypatch.setattr("app.config.settings.SQLITE_DB_PATH", str(test_db))
+    sqlite.init_db()
+
+@pytest.fixture
+def auth_headers():
+    token = auth.create_access_token({"sub": "test_user_id", "email": "test@example.com"})
+    return {"Authorization": f"Bearer {token}"}
+
+@pytest.fixture
+def mock_current_user():
+    return {
+        "id": "test_user_id",
+        "email": "test@example.com",
+        "full_name": "Test User",
+        "memberships": [{"family_entity_id": "default_family", "role": "family_admin"}]
+    }
 
 
 def test_max_file_size_configuration():
@@ -15,7 +37,7 @@ def test_max_file_size_configuration():
     assert MAX_FILE_SIZE == 100 * 1024 * 1024
 
 
-def test_upload_exceeds_100mb_limit():
+def test_upload_exceeds_100mb_limit(auth_headers, mock_current_user):
     oversized_size = MAX_FILE_SIZE + 1024
 
     class OversizedStream(io.RawIOBase):
@@ -30,13 +52,15 @@ def test_upload_exceeds_100mb_limit():
             return b"A" * to_read
 
     oversized_file = OversizedStream(oversized_size)
-    response = client.post(
-        "/api/documents/upload",
-        files={"file": ("large_document.txt", oversized_file, "text/plain")},
-        data={"family_entity_id": "default_family", "allowed_role": "family_member"}
-    )
-    assert response.status_code == 413
-    assert f"File exceeds maximum allowed upload size of {settings.MAX_FILE_SIZE_MB}MB." in response.json()["detail"]
+    with patch("app.services.auth.get_current_user_optional", return_value=mock_current_user):
+        response = client.post(
+            "/api/documents/upload",
+            files={"file": ("large_document.txt", oversized_file, "text/plain")},
+            data={"family_entity_id": "default_family", "allowed_role": "family_member"},
+            headers=auth_headers
+        )
+        assert response.status_code == 413
+        assert f"File exceeds maximum allowed upload size of {settings.MAX_FILE_SIZE_MB}MB." in response.json()["detail"]
 
 
 @patch("app.routers.documents.extractor.extract_document")
@@ -51,7 +75,9 @@ def test_upload_within_100mb_limit(
     mock_upsert_vectors,
     mock_embed_texts,
     mock_chunk_doc,
-    mock_extract_doc
+    mock_extract_doc,
+    auth_headers,
+    mock_current_user
 ):
     mock_extract_doc.return_value = [MagicMock(page_number=1, text="Sample text", tables=[])]
     mock_chunk_doc.return_value = [{"id": "chunk_1", "content": "Sample text", "chunk_index": 0, "page_number": 1}]
@@ -59,14 +85,16 @@ def test_upload_within_100mb_limit(
     mock_upsert_vectors.return_value = 1
 
     content = b"Tax Notice content within size limit"
-    response = client.post(
-        "/api/documents/upload",
-        files={"file": ("tax_notice.txt", io.BytesIO(content), "text/plain")},
-        data={"family_entity_id": "default_family", "allowed_role": "family_member"}
-    )
-    assert response.status_code == 201
-    assert response.json()["total_vectors_indexed"] == 1
-    mock_save_doc.assert_called_once()
+    with patch("app.services.auth.get_current_user_optional", return_value=mock_current_user):
+        response = client.post(
+            "/api/documents/upload",
+            files={"file": ("tax_notice.txt", io.BytesIO(content), "text/plain")},
+            data={"family_entity_id": "default_family", "allowed_role": "family_member"},
+            headers=auth_headers
+        )
+        assert response.status_code == 201
+        assert response.json()["total_vectors_indexed"] == 1
+        mock_save_doc.assert_called_once()
 
 
 @patch("app.routers.documents.extractor.extract_document")
@@ -81,7 +109,9 @@ def test_batch_upload_multiple_files(
     mock_upsert_vectors,
     mock_embed_texts,
     mock_chunk_doc,
-    mock_extract_doc
+    mock_extract_doc,
+    auth_headers,
+    mock_current_user
 ):
     mock_extract_doc.return_value = [MagicMock(page_number=1, text="Sample text", tables=[])]
     mock_chunk_doc.return_value = [{"id": "chunk_1", "content": "Sample text", "chunk_index": 0, "page_number": 1}]
@@ -92,21 +122,23 @@ def test_batch_upload_multiple_files(
         ("files", ("notice_1.txt", io.BytesIO(b"Notice 1"), "text/plain")),
         ("files", ("notice_2.txt", io.BytesIO(b"Notice 2"), "text/plain")),
     ]
-    response = client.post(
-        "/api/documents/upload-batch",
-        files=files,
-        data={"family_entity_id": "default_family", "allowed_role": "family_member"}
-    )
-    assert response.status_code == 201
-    data = response.json()
-    assert data["total_files"] == 2
-    assert data["successful_files"] == 2
-    assert len(data["documents"]) == 2
-    assert mock_save_doc.call_count == 2
+    with patch("app.services.auth.get_current_user_optional", return_value=mock_current_user):
+        response = client.post(
+            "/api/documents/upload-batch",
+            files=files,
+            data={"family_entity_id": "default_family", "allowed_role": "family_member"},
+            headers=auth_headers
+        )
+        assert response.status_code == 201
+        data = response.json()
+        assert data["total_files"] == 2
+        assert data["successful_files"] == 2
+        assert len(data["documents"]) == 2
+        assert mock_save_doc.call_count == 2
 
 
 @patch("app.routers.documents.pinecone_service.list_documents_from_pinecone")
-def test_list_documents_pure_pinecone(mock_list_pinecone):
+def test_list_documents_pure_pinecone(mock_list_pinecone, auth_headers, mock_current_user):
     mock_list_pinecone.return_value = [
         {
             "id": "doc-1",
@@ -133,9 +165,10 @@ def test_list_documents_pure_pinecone(mock_list_pinecone):
             "uploaded_at": "2026-10-28T10:05:00"
         }
     ]
-    response = client.get("/api/documents")
-    assert response.status_code == 200
-    docs = response.json()
-    assert len(docs) == 2
-    assert docs[0]["original_name"] == "file1.pdf"
-    assert docs[1]["original_name"] == "file2.docx"
+    with patch("app.services.auth.get_current_user_optional", return_value=mock_current_user):
+        response = client.get("/api/documents", headers=auth_headers)
+        assert response.status_code == 200
+        docs = response.json()
+        assert len(docs) == 2
+        assert docs[0]["original_name"] == "file1.pdf"
+        assert docs[1]["original_name"] == "file2.docx"

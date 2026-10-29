@@ -42,9 +42,9 @@ export function AetherVoiceBar({
   const pulseAnim = useRef(new Animated.Value(1)).current;
 
   const quickPrompts = [
-    "AAPL closing price",
-    "Trading volume & returns",
-    "Volatility metrics",
+    "Portfolio asset allocation",
+    "Quarterly balance and returns",
+    "Tax distributions & franking credits",
   ];
 
   // Request permissions safely
@@ -217,7 +217,7 @@ export function AetherVoiceBar({
           <TextInput
             value={inputText}
             onChangeText={setInputText}
-            placeholder="Ask Aether about AAPL records..."
+            placeholder="Ask Aether about financial records..."
             placeholderTextColor={colors.textMuted}
             editable={!isProcessing}
             style={[styles.input, { color: colors.text }]}

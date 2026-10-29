@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import tempfile
 import uuid
@@ -9,64 +10,62 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 from app.schemas.document import BatchDocumentUploadResponse, DocumentResponse, DocumentTableResponse, DocumentUploadResponse
 from app.services import auth, chunker, embeddings, extractor, pinecone_service
 from app.services.lexical_index import lexical_index
+from app.services.table_reader import read_document_table_data
+from app.db import sqlite
 
 router = APIRouter(prefix="/api/documents", tags=["Documents"])
 
 ALLOWED_MIME_TYPES = {
     "application/pdf": ".pdf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
-    "application/msword": ".doc",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
-    "application/vnd.ms-excel": ".xls",
     "text/plain": ".txt",
     "text/markdown": ".md",
     "text/csv": ".csv",
     "application/csv": ".csv"
 }
 
-
 import logging
 from app.config import settings
+from app.services.upload_security import (
+    sanitize_filename,
+    validate_file_magic_bytes,
+    check_zip_decompression_bomb,
+)
 
 logger = logging.getLogger(__name__)
 
 MAX_FILE_SIZE = settings.MAX_FILE_SIZE_MB * 1024 * 1024
 
 
-def validate_file_magic_bytes(header: bytes, ext: str) -> bool:
-    if ext == ".pdf":
-        return header.startswith(b"%PDF-")
-    if ext in [".docx", ".xlsx"]:
-        return header.startswith(b"PK\x03\x04")
-    if ext in [".txt", ".md", ".csv"]:
-        # Block dangerous executable formats disguised as plain text
-        if header.startswith(b"MZ") or header.startswith(b"\x7fELF") or header.startswith(b"\xca\xfe\xba\xbe"):
-            return False
-        return True
-    return True
-
-
 async def _process_single_upload(
     file: UploadFile,
     family_entity_id: str = "default_family",
-    allowed_role: str = "family_member"
+    allowed_role: str = "family_member",
+    user_id: Optional[str] = None
 ) -> DocumentUploadResponse:
     """
     Sovereign Document Ingestion:
-    1. Validates MIME type and binary magic-bytes.
+    1. Validates MIME type, binary magic-bytes, and decompression bomb safety.
     2. Enforces strict file size bounds (<{settings.MAX_FILE_SIZE_MB}MB).
-    3. Persists document provenance, chunks, and metadata exclusively in Pinecone Cloud.
-    4. Upserts vector embeddings directly to Pinecone.
+    3. Offloads parsing to worker threads to protect the event loop.
+    4. Persists document provenance, chunks, and metadata in Pinecone & SQLite.
     """
-    # 1. Validate file extension
-    file_ext = Path(file.filename).suffix.lower()
+    safe_filename = sanitize_filename(file.filename)
+    file_ext = Path(safe_filename).suffix.lower()
+
+    if file_ext in [".doc", ".xls"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Legacy binary formats (.doc, .xls) are not supported. Please upload modern formats (.docx, .xlsx) or PDF/CSV."
+        )
+
     if file_ext not in ALLOWED_MIME_TYPES.values():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unsupported file format '{file_ext}'. Allowed formats: PDF, DOCX, XLSX, TXT, CSV, MD."
         )
 
-    # 2. Stage into a temporary buffer for extraction and validate magic bytes
     doc_id = str(uuid.uuid4())
     stored_filename = f"{doc_id}{file_ext}"
 
@@ -74,42 +73,60 @@ async def _process_single_upload(
     file_size = 0
     header_bytes = b""
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
-        tmp_path = Path(tmp_file.name)
+    tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=file_ext)
+    tmp_path = Path(tmp_file.name)
+
+    try:
         while chunk := await file.read(64 * 1024):
             if not header_bytes:
                 header_bytes = chunk[:16]
             hasher.update(chunk)
             file_size += len(chunk)
             if file_size > MAX_FILE_SIZE:
-                tmp_file.close()
-                if tmp_path.exists():
-                    tmp_path.unlink()
                 raise HTTPException(
-                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                     detail=f"File exceeds maximum allowed upload size of {settings.MAX_FILE_SIZE_MB}MB."
                 )
             tmp_file.write(chunk)
+        tmp_file.close()
 
-    if not validate_file_magic_bytes(header_bytes, file_ext):
-        if tmp_path.exists():
-            tmp_path.unlink()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Security rejection: file contents do not match extension '{file_ext}'."
-        )
+        if not validate_file_magic_bytes(header_bytes, file_ext):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Security rejection: file contents do not match extension '{file_ext}'."
+            )
 
-    file_hash = hasher.hexdigest()
+        # Guard against decompression zip bombs (Audit F3)
+        check_zip_decompression_bomb(tmp_path)
 
-    # 3. Parse and extract text/tables preserving pages
-    try:
-        pages = extractor.extract_document(tmp_path, file.content_type or "")
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Failed to extract text from {file.filename}: {str(e)}"
-        )
+        file_hash = hasher.hexdigest()
+
+        # Check for duplicate document in this entity (Finding F1 fix)
+        existing_doc = sqlite.get_document_by_hash(family_entity_id, file_hash)
+        if existing_doc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"A document with identical content '{existing_doc.get('original_name')}' already exists in this family vault."
+            )
+
+        # 3. Offload document parsing off the event loop (Audit F3)
+        try:
+            pages = await asyncio.to_thread(extractor.extract_document, tmp_path, file.content_type or "")
+        except HTTPException:
+            raise
+        except ValueError as ve:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
+        except Exception as e:
+            logger.error("Document extraction error: %s", e)
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"Failed to extract document contents: {str(e)[:120]}"
+            )
     finally:
+        try:
+            tmp_file.close()
+        except Exception:
+            pass
         if tmp_path.exists():
             tmp_path.unlink()
 
@@ -120,21 +137,22 @@ async def _process_single_upload(
     if not chunks:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Document {file.filename} contains no extractable text."
+            detail=f"Document '{safe_filename}' contains no extractable text."
         )
 
-    # Add original filename to each chunk metadata
+    # Add original sanitized filename to each chunk metadata
     for c in chunks:
-        c["original_name"] = file.filename
+        c["original_name"] = safe_filename
 
     # 5. Generate embeddings with all-MiniLM-L6-v2
     chunk_texts = [c["content"] for c in chunks]
     try:
         chunk_embeddings = embeddings.embed_texts(chunk_texts)
     except Exception as e:
+        logger.error("Embedding computation error: %s", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to compute embeddings: {str(e)}"
+            detail="Failed to compute embeddings. Vector ingestion halted."
         )
 
     # 6. Upsert vectors into Pinecone Cloud
@@ -148,9 +166,10 @@ async def _process_single_upload(
             allowed_roles=roles_for_pinecone
         )
     except Exception as e:
+        logger.error("Pinecone vector upsert error: %s", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Pinecone vector upsert failed: {str(e)}"
+            detail="Vector database upsert failed. Please try again."
         )
 
     # 7. Extract real table headers, sample data rows, or text preview
@@ -184,11 +203,11 @@ async def _process_single_upload(
     if text_snippets:
         extracted_preview_text = " ".join(text_snippets)[:500]
 
-    # 8. Persist document record exclusively into Pinecone Cloud Registry
+    # 8. Persist document record into SQLite System of Record & Pinecone Cloud Registry
     doc_record = {
         "id": doc_id,
         "filename": stored_filename,
-        "original_name": file.filename,
+        "original_name": safe_filename,
         "mime_type": file.content_type or "application/octet-stream",
         "file_size": file_size,
         "file_hash": file_hash,
@@ -201,8 +220,32 @@ async def _process_single_upload(
         "preview_text": extracted_preview_text,
         "is_table": is_table_doc or file_ext in [".csv", ".xlsx", ".xls"]
     }
+    sqlite.insert_document(doc_record)
+    sqlite.insert_document_acl(document_id=doc_id, family_entity_id=family_entity_id, allowed_role=allowed_role)
+    sqlite.insert_chunks([
+        {
+            "id": c["id"],
+            "document_id": doc_id,
+            "chunk_index": c.get("chunk_index", 0),
+            "page_number": c.get("page_number", 1),
+            "section_title": c.get("section_title"),
+            "content": c["content"],
+            "is_table": bool(c.get("is_table", False))
+        }
+        for c in chunks
+    ])
+
     pinecone_service.save_document_to_pinecone(doc_record)
-    pinecone_service.get_document_names(force=True)
+    pinecone_service.get_document_names(family_entity_id=family_entity_id, force=True)
+
+    # Log document upload audit event
+    sqlite.log_audit_event(
+        action="DOCUMENT_UPLOADED",
+        user_id=user_id,
+        family_entity_id=family_entity_id,
+        resource_id=doc_id,
+        details=f"Document '{safe_filename}' uploaded ({total_pages} page(s), {total_vectors} vectors)."
+    )
 
     # Make the new chunks immediately searchable by the keyword half of hybrid retrieval
     lexical_index.add_chunks([
@@ -213,18 +256,39 @@ async def _process_single_upload(
             "is_table": bool(c.get("is_table", False)),
             "family_entity_id": family_entity_id,
             "allowed_roles": roles_for_pinecone,
-            "original_name": file.filename,
+            "original_name": safe_filename,
             "text": c["content"],
         }
         for c in chunks
     ])
 
     return DocumentUploadResponse(
-        message=f"Document '{file.filename}' processed successfully across {total_pages} page(s).",
+        message=f"Document '{safe_filename}' processed successfully across {total_pages} page(s).",
         document=DocumentResponse(**doc_record),
         total_chunks=len(chunks),
         total_vectors_indexed=total_vectors
     )
+
+
+def _validate_uploader(family_entity_id: str, current_user: Dict[str, Any]) -> str:
+    user_memberships = current_user.get("memberships") or []
+    if not user_memberships:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User has no family memberships."
+        )
+    target_membership = next((m for m in user_memberships if m["family_entity_id"] == family_entity_id), None)
+    if not target_membership:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Access denied: You do not hold active membership in family entity '{family_entity_id}'."
+        )
+    if target_membership.get("role") == "read_only_adviser":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Read-only advisers are not permitted to upload documents."
+        )
+    return target_membership.get("role", "family_member")
 
 
 @router.post("/upload", response_model=DocumentUploadResponse, status_code=status.HTTP_201_CREATED)
@@ -232,9 +296,15 @@ async def upload_document(
     file: UploadFile = File(...),
     family_entity_id: str = Form("default_family"),
     allowed_role: str = Form("family_member"),
-    current_user: Optional[Dict[str, Any]] = Depends(auth.get_current_user_optional)
+    current_user: Dict[str, Any] = Depends(auth.get_current_user)
 ):
-    return await _process_single_upload(file=file, family_entity_id=family_entity_id, allowed_role=allowed_role)
+    _validate_uploader(family_entity_id, current_user)
+    return await _process_single_upload(
+        file=file,
+        family_entity_id=family_entity_id,
+        allowed_role=allowed_role,
+        user_id=current_user.get("id")
+    )
 
 
 @router.post("/upload-batch", response_model=BatchDocumentUploadResponse, status_code=status.HTTP_201_CREATED)
@@ -242,17 +312,23 @@ async def upload_documents_batch(
     files: List[UploadFile] = File(...),
     family_entity_id: str = Form("default_family"),
     allowed_role: str = Form("family_member"),
-    current_user: Optional[Dict[str, Any]] = Depends(auth.get_current_user_optional)
+    current_user: Dict[str, Any] = Depends(auth.get_current_user)
 ):
     """
     Multi-file batch upload:
     Ingests multiple files into Pinecone Cloud with independent 100MB validation per file.
     """
+    _validate_uploader(family_entity_id, current_user)
     successful_docs = []
     errors = []
     for f in files:
         try:
-            res = await _process_single_upload(file=f, family_entity_id=family_entity_id, allowed_role=allowed_role)
+            res = await _process_single_upload(
+                file=f,
+                family_entity_id=family_entity_id,
+                allowed_role=allowed_role,
+                user_id=current_user.get("id")
+            )
             successful_docs.append(res.document)
         except Exception as e:
             err_msg = getattr(e, "detail", str(e))
@@ -269,13 +345,25 @@ async def upload_documents_batch(
 
 @router.get("", response_model=List[DocumentResponse])
 async def list_documents(
-    current_user: Optional[Dict[str, Any]] = Depends(auth.get_current_user_optional)
+    family_entity_id: Optional[str] = None,
+    current_user: Dict[str, Any] = Depends(auth.get_current_user)
 ):
     """
-    List documents directly from Pinecone Cloud Registry (pure Pinecone storage).
+    List documents directly from Pinecone Cloud Registry filtered strictly by authorized family entity.
     """
+    user_memberships = current_user.get("memberships") or []
+    if not user_memberships:
+        return []
+
+    target_entity = family_entity_id or user_memberships[0]["family_entity_id"]
+    if not any(m["family_entity_id"] == target_entity for m in user_memberships):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Access denied: You do not hold active membership in family entity '{target_entity}'."
+        )
+
     try:
-        cloud_docs = pinecone_service.list_documents_from_pinecone(family_entity_id="*")
+        cloud_docs = pinecone_service.list_documents_from_pinecone(family_entity_id=target_entity)
         return [DocumentResponse(**d) for d in cloud_docs]
     except Exception as e:
         logger.error(f"Error fetching documents from Pinecone: {e}")
@@ -283,15 +371,30 @@ async def list_documents(
 
 
 @router.get("/suggestions", response_model=List[str])
-async def get_document_suggestions(family_entity_id: str = "default_family"):
+async def get_document_suggestions(
+    family_entity_id: Optional[str] = None,
+    current_user: Dict[str, Any] = Depends(auth.get_current_user)
+):
     """
     Generate dynamic financial query suggestions based on actual indexed documents in Pinecone.
     """
+    user_memberships = current_user.get("memberships") or []
+    if not user_memberships:
+        return [
+            "Deposit financial records into the vault to generate insights",
+            "Ask questions about AUD balances or portfolios"
+        ]
+
+    target_entity = family_entity_id or user_memberships[0]["family_entity_id"]
+    if not any(m["family_entity_id"] == target_entity for m in user_memberships):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Access denied: You do not hold active membership in family entity '{target_entity}'."
+        )
+
     docs = []
     try:
-        docs = pinecone_service.list_documents_from_pinecone(family_entity_id)
-        if not docs:
-            docs = pinecone_service.list_documents_from_pinecone("*")
+        docs = pinecone_service.list_documents_from_pinecone(target_entity)
     except Exception as e:
         logger.error(f"Error fetching suggestions from Pinecone: {e}")
         docs = []
@@ -319,8 +422,8 @@ async def get_document_suggestions(family_entity_id: str = "default_family"):
         elif "credit card" in stem.lower() or "transaction" in stem.lower():
             suggestions.append(f"Monthly spending and total amounts in {stem}")
             suggestions.append(f"Category breakdown of transactions in {stem}")
-        elif "aapl" in stem.lower():
-            suggestions.append("AAPL closing price & volume on 2020-04-01")
+        elif any(k in stem.lower() for k in ["equity", "share", "stock", "holding", "portfolio"]):
+            suggestions.append(f"Portfolio holdings and valuation summary in {stem}")
         else:
             suggestions.append(f"Key financial figures and summary of {stem}")
 
@@ -337,7 +440,7 @@ async def get_document_suggestions(family_entity_id: str = "default_family"):
 @router.get("/{document_id}", response_model=DocumentResponse)
 async def get_document(
     document_id: str,
-    current_user: Optional[Dict[str, Any]] = Depends(auth.get_current_user_optional)
+    current_user: Dict[str, Any] = Depends(auth.get_current_user)
 ):
     """
     Retrieve document metadata directly from Pinecone Cloud Registry.
@@ -345,6 +448,14 @@ async def get_document(
     doc = pinecone_service.get_document_from_pinecone(document_id)
     if not doc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found in Pinecone registry.")
+
+    doc_entity = doc.get("family_entity_id")
+    user_entities = {m["family_entity_id"] for m in (current_user.get("memberships") or [])}
+    if doc_entity not in user_entities:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: You are not authorized to view this document."
+        )
 
     return DocumentResponse(**doc)
 
@@ -355,7 +466,7 @@ async def get_document_table(
     page: int = 1,
     page_size: int = 50,
     search: Optional[str] = None,
-    current_user: Optional[Dict[str, Any]] = Depends(auth.get_current_user_optional)
+    current_user: Dict[str, Any] = Depends(auth.get_current_user)
 ):
     """
     Retrieve full tabular records directly from Pinecone Cloud.
@@ -365,92 +476,22 @@ async def get_document_table(
     if not doc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found in Pinecone registry.")
 
-    filename = doc.get("original_name") or doc.get("filename") or "Document"
-    columns = doc.get("columns") or []
-    total_pages = int(doc.get("total_pages", 1) or 1)
-    page = max(1, page)
-
-    index = pinecone_service.get_index()
-    rows: List[List[str]] = []
-    total_rows = 0
-
-    # 1. If search is requested, query matching chunks across the document
-    if search and search.strip():
-        s_term = search.strip().lower()
-        family_id = doc.get("family_entity_id", "default_family")
-        matched_chunks = lexical_index.search(
-            query=search,
-            family_entity_id=family_id,
-            user_roles=["family_member", "family_admin"],
-            top_k=30
+    doc_entity = doc.get("family_entity_id")
+    user_entities = {m["family_entity_id"] for m in (current_user.get("memberships") or [])}
+    if doc_entity not in user_entities:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: You are not authorized to view tables for this document."
         )
-        doc_matched = [c for c in matched_chunks if c.get("document_id") == document_id]
-        filtered_rows: List[List[str]] = []
-        for c in doc_matched:
-            c_text = c.get("text", "")
-            for line in c_text.splitlines():
-                if "|" in line and "---" not in line and not line.strip().startswith("###"):
-                    r = [cell.strip() for cell in line.strip("|").split("|")]
-                    if len(r) == len(columns) and any(s_term in cell.lower() for cell in r):
-                        if r not in filtered_rows:
-                            filtered_rows.append(r)
-        if filtered_rows:
-            total_rows = len(filtered_rows)
-            start_i = (page - 1) * page_size
-            rows = filtered_rows[start_i:start_i + page_size]
-            calc_pages = max(1, (total_rows + page_size - 1) // page_size)
-            return DocumentTableResponse(
-                document_id=document_id,
-                filename=filename,
-                columns=columns,
-                rows=rows,
-                total_rows=total_rows,
-                page=page,
-                page_size=page_size,
-                total_pages=calc_pages
-            )
 
-    # 2. Standard pagination: direct fetch chunk for requested page
-    target_chunk_id = f"{document_id}_p{page}_t0"
-    try:
-        fetch_res = index.fetch(ids=[target_chunk_id])
-        vectors = getattr(fetch_res, "vectors", {}) or {}
-        chunk = vectors.get(target_chunk_id)
-
-        if chunk and getattr(chunk, "metadata", None):
-            text = chunk.metadata.get("text", "")
-            lines = [l.strip() for l in text.splitlines() if l.strip()]
-            for i in range(len(lines) - 1):
-                if "|" in lines[i] and "---" in lines[i + 1]:
-                    header = [c.strip() for c in lines[i].strip("|").split("|")]
-                    if not columns:
-                        columns = header
-                    for j in range(i + 2, len(lines)):
-                        if "|" in lines[j]:
-                            r = [c.strip() for c in lines[j].strip("|").split("|")]
-                            if len(r) == len(columns):
-                                rows.append(r)
-                    break
-            # Parse total rows from header if available
-            if lines and "of " in lines[0] and ")" in lines[0]:
-                try:
-                    tot_part = lines[0].split("of ")[1].split(")")[0].strip()
-                    total_rows = int(tot_part)
-                except Exception:
-                    total_rows = total_pages * 50
-            else:
-                total_rows = total_pages * 50
-        else:
-            rows = doc.get("sample_rows") or []
-            total_rows = len(rows)
-    except Exception as e:
-        logger.error(f"Error fetching table page chunk from Pinecone: {e}")
-        rows = doc.get("sample_rows") or []
-        total_rows = len(rows)
-
-    if total_rows == 0:
-        total_rows = len(rows)
-    calc_pages = max(1, (total_rows + page_size - 1) // page_size) if total_rows > 0 else total_pages
+    filename = doc.get("original_name") or doc.get("filename") or "Document"
+    columns, rows, total_rows, calc_pages = read_document_table_data(
+        doc=doc,
+        document_id=document_id,
+        page=page,
+        page_size=page_size,
+        search=search
+    )
 
     return DocumentTableResponse(
         document_id=document_id,
@@ -462,3 +503,56 @@ async def get_document_table(
         page_size=page_size,
         total_pages=calc_pages
     )
+
+
+@router.delete("/{document_id}")
+async def delete_document(
+    document_id: str,
+    current_user: Dict[str, Any] = Depends(auth.get_current_user)
+):
+    """
+    Sovereign Document Deletion (APP 11 / right to erasure):
+    Atomically deletes document metadata, chunks, and vector embeddings across SQLite, Pinecone, and BM25 index.
+    """
+    doc = pinecone_service.get_document_from_pinecone(document_id)
+    if not doc:
+        doc = sqlite.get_document_by_id(document_id)
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+
+    doc_entity = doc.get("family_entity_id")
+    user_memberships = current_user.get("memberships") or []
+    target_membership = next((m for m in user_memberships if m["family_entity_id"] == doc_entity), None)
+    if not target_membership:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: You are not authorized to delete documents in this entity."
+        )
+    if target_membership.get("role") != "family_admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Permission denied: Only family_admin can delete documents from the vault."
+        )
+
+    # 1. Delete from SQLite System of Record (cascades to chunks & ACL)
+    sqlite.delete_document(document_id)
+
+    # 2. Delete from Pinecone Cloud (vectors & document registry)
+    pinecone_service.delete_document_from_pinecone(document_id, doc_entity)
+
+    # 3. Delete from in-memory / cached BM25 lexical index
+    lexical_index.delete_document_chunks(document_id)
+
+    # 4. Audit log event
+    sqlite.log_audit_event(
+        action="DOCUMENT_DELETED",
+        user_id=current_user.get("id"),
+        family_entity_id=doc_entity,
+        resource_id=document_id,
+        details=f"Document '{doc.get('original_name')}' deleted by user."
+    )
+
+    return {
+        "message": f"Document '{doc.get('original_name')}' successfully deleted across all storage tiers.",
+        "document_id": document_id
+    }

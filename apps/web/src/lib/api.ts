@@ -1,4 +1,5 @@
 import { DocumentRecord, DocumentTableData, CitationItem, StructuredData, ThinkingStage, HistoryTurn, Dashboard } from "../types";
+import { getAuthHeaders } from "./auth";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -20,7 +21,9 @@ export async function fetchDocumentTable(
       params.set("search", search.trim());
     }
     const url = `${API_BASE_URL}/api/documents/${encodeURIComponent(documentId)}/table?${params}`;
-    const res = await fetch(url);
+    const res = await fetch(url, {
+      headers: getAuthHeaders(),
+    });
     if (!res.ok) {
       throw new Error(`HTTP ${res.status}: Failed to fetch document table`);
     }
@@ -34,10 +37,14 @@ export async function fetchDocumentTable(
 /**
  * Fetch list of indexed documents for the selected family entity.
  */
-export async function fetchDocuments(entityId: string = "default_family"): Promise<DocumentRecord[]> {
+export async function fetchDocuments(entityId?: string): Promise<DocumentRecord[]> {
   try {
-    const url = `${API_BASE_URL}/api/documents`;
-    const res = await fetch(url);
+    const url = entityId
+      ? `${API_BASE_URL}/api/documents?family_entity_id=${encodeURIComponent(entityId)}`
+      : `${API_BASE_URL}/api/documents`;
+    const res = await fetch(url, {
+      headers: getAuthHeaders(),
+    });
     if (!res.ok) {
       throw new Error(`HTTP ${res.status}: Failed to fetch documents`);
     }
@@ -52,10 +59,14 @@ export async function fetchDocuments(entityId: string = "default_family"): Promi
 /**
  * Fetch dynamic suggested questions grounded in the current entity's documents.
  */
-export async function fetchDocumentSuggestions(entityId: string = "default_family"): Promise<string[]> {
+export async function fetchDocumentSuggestions(entityId?: string): Promise<string[]> {
   try {
-    const url = `${API_BASE_URL}/api/documents/suggestions?family_entity_id=${encodeURIComponent(entityId)}`;
-    const res = await fetch(url);
+    const url = entityId
+      ? `${API_BASE_URL}/api/documents/suggestions?family_entity_id=${encodeURIComponent(entityId)}`
+      : `${API_BASE_URL}/api/documents/suggestions`;
+    const res = await fetch(url, {
+      headers: getAuthHeaders(),
+    });
     if (!res.ok) {
       return [];
     }
@@ -86,9 +97,9 @@ export async function queryAssistant(
 ): Promise<QueryAssistantResult> {
   const res = await fetch(`${API_BASE_URL}/api/query`, {
     method: "POST",
-    headers: {
+    headers: getAuthHeaders({
       "Content-Type": "application/json",
-    },
+    }),
     body: JSON.stringify({
       question,
       family_entity_id: entityId,
@@ -133,7 +144,7 @@ export async function streamQuery(
 ): Promise<void> {
   const res = await fetch(`${API_BASE_URL}/api/query/stream`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+    headers: getAuthHeaders({ "Content-Type": "application/json", Accept: "text/event-stream" }),
     body: JSON.stringify({
       question: params.question,
       family_entity_id: params.entityId || "default_family",
@@ -179,7 +190,12 @@ export async function transcribeAudio(audioBlob: Blob, signal?: AbortSignal): Pr
   const formData = new FormData();
   const ext = audioBlob.type.includes("mp4") ? "m4a" : audioBlob.type.includes("ogg") ? "ogg" : "webm";
   formData.append("file", audioBlob, `utterance.${ext}`);
-  const res = await fetch(`${API_BASE_URL}/api/voice/transcribe`, { method: "POST", body: formData, signal });
+  const res = await fetch(`${API_BASE_URL}/api/voice/transcribe`, {
+    method: "POST",
+    headers: getAuthHeaders(),
+    body: formData,
+    signal,
+  });
   if (!res.ok) {
     const errorBody = await res.json().catch(() => ({}));
     throw new Error(errorBody.detail || `Transcription failed with status ${res.status}`);
@@ -192,7 +208,7 @@ export async function transcribeAudio(audioBlob: Blob, signal?: AbortSignal): Pr
 export async function synthesizeSpeech(text: string, signal?: AbortSignal, voice?: string): Promise<Blob> {
   const res = await fetch(`${API_BASE_URL}/api/voice/synthesize`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: getAuthHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ text, voice }),
     signal,
   });
@@ -226,6 +242,7 @@ export async function voiceAskAssistant(
 
   const res = await fetch(`${API_BASE_URL}/api/voice/ask`, {
     method: "POST",
+    headers: getAuthHeaders(),
     body: formData,
   });
 
@@ -267,6 +284,7 @@ export async function uploadDocument(
 
   const res = await fetch(`${API_BASE_URL}/api/documents/upload`, {
     method: "POST",
+    headers: getAuthHeaders(),
     body: formData,
   });
 
@@ -295,6 +313,7 @@ export async function uploadDocumentsBatch(
 
   const res = await fetch(`${API_BASE_URL}/api/documents/upload-batch`, {
     method: "POST",
+    headers: getAuthHeaders(),
     body: formData,
   });
 
@@ -310,7 +329,7 @@ export async function uploadDocumentsBatch(
 export async function createDashboard(params: { question: string; answer?: string; entityId?: string }): Promise<Dashboard> {
   const res = await fetch(`${API_BASE_URL}/api/dashboards`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: getAuthHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({
       question: params.question,
       answer: (params.answer || "").slice(0, 8000),
@@ -321,5 +340,22 @@ export async function createDashboard(params: { question: string; answer?: strin
     const errorBody = await res.json().catch(() => ({}));
     throw new Error(errorBody.detail || `Dashboard request failed with status ${res.status}`);
   }
+  return await res.json();
+}
+
+/**
+ * Delete a document and its indexed vectors across all storage tiers.
+ */
+export async function deleteDocument(documentId: string): Promise<{ message: string; document_id: string }> {
+  const res = await fetch(`${API_BASE_URL}/api/documents/${encodeURIComponent(documentId)}`, {
+    method: "DELETE",
+    headers: getAuthHeaders(),
+  });
+
+  if (!res.ok) {
+    const errorBody = await res.json().catch(() => ({}));
+    throw new Error(errorBody.detail || `Document deletion failed with status ${res.status}`);
+  }
+
   return await res.json();
 }

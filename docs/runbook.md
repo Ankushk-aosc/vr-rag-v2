@@ -172,11 +172,14 @@ npm run build
 
 ## 7. Australian Privacy & Regulatory Compliance Alignment
 
-1. **Australian Privacy Principles (APPs):**
-   * Raw personal records (tax file numbers, bank balances, names) are **never sent to cloud vector metadata**.
-   * Only anonymized mathematical vectors and chunk IDs are stored in Pinecone.
-   * All raw extracted document text remains stored locally on your hard drive in SQLite (`data/app.db`).
+1. **Australian Privacy Principles (APPs) & Cross-Border Data Disclosure (APP 8):**
+   * **Local Storage:** Original raw documents, SQLite relational databases (`data/app.db`), and BM25 disk indices (`data/lexical/`) remain strictly on the host system.
+   * **Cloud Services & Data Flows:** In accordance with APP 8, family office operators must note that:
+     - Vector indexing transfers mathematical embeddings along with passage chunk text to Pinecone Serverless in AWS `us-east-1` (US).
+     - RAG inference sends query prompts and retrieved evidence passages to Groq Cloud LLM APIs (`llama-3.3-70b-versatile`).
+     - Voice interactions stream audio to Groq Whisper STT and receive audio synthesized by Microsoft Edge-TTS cloud service.
+     - Deployers should ensure appropriate DPAs, security controls, and client disclosures are in place prior to handling sensitive personal information.
 2. **ASIC RG 244 Factual Information Standard:**
    * The assistant enforces prominent headers and response notices stating that outputs are purely factual summaries extracted from uploaded documents and do not constitute personal financial product advice.
 3. **Prompt-Injection Defense:**
-   * Document excerpts are wrapped in strict `<evidence>` boundary tags. The LLM is instructed never to execute commands or overrides found within document bodies.
+   * Document excerpts are sanitized and wrapped in strict `<evidence>` boundary tags. The LLM is instructed never to execute commands or overrides found within document bodies.
