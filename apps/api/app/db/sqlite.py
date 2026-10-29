@@ -142,6 +142,52 @@ def init_db() -> None:
 
         conn.commit()
 
+    seed_default_demo_admin()
+
+
+def seed_default_demo_admin() -> None:
+    """Idempotently seed default demo administrator for immediate zero-config login across systems."""
+    demo_email = "admin@sovereignfamily.com.au"
+    demo_password = "SovereignAdmin2026!"
+    demo_entity_id = "default_family"
+    user_id = "usr_demo_admin"
+
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+
+        # Check if demo admin already exists
+        cursor.execute("SELECT id FROM users WHERE email = ?", (demo_email,))
+        row = cursor.fetchone()
+        if not row:
+            from app.services.auth import hash_password
+            hashed = hash_password(demo_password)
+            cursor.execute(
+                "INSERT INTO users (id, email, hashed_password, full_name) VALUES (?, ?, ?, ?)",
+                (user_id, demo_email, hashed, "Sovereign Administrator")
+            )
+            current_user_id = user_id
+        else:
+            current_user_id = row["id"]
+
+        # Ensure default_family entity exists
+        cursor.execute("""
+            INSERT OR IGNORE INTO family_entities (id, name, entity_type)
+            VALUES ('default_family', 'Default Family Trust', 'Family Trust');
+        """)
+
+        # Ensure membership exists linking user to default_family as family_admin
+        cursor.execute(
+            "SELECT id FROM memberships WHERE user_id = ? AND family_entity_id = ?",
+            (current_user_id, demo_entity_id)
+        )
+        if not cursor.fetchone():
+            cursor.execute(
+                "INSERT INTO memberships (id, user_id, family_entity_id, role) VALUES (?, ?, ?, ?)",
+                ("mem_demo_admin", current_user_id, demo_entity_id, "family_admin")
+            )
+
+        conn.commit()
+
 
 # --- User & Family Operations ---
 

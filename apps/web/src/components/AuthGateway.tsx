@@ -107,16 +107,16 @@ export function AuthGateway({ onAuthenticated }: AuthGatewayProps) {
 
   return (
     <div
-      className="fixed inset-0 z-50 overflow-hidden font-sans bg-[#060609]"
+      className="fixed inset-0 z-50 overflow-hidden font-sans bg-black"
       style={{
         backgroundImage:
-          "radial-gradient(circle at 50% 35%, rgba(124, 58, 237, 0.22) 0%, rgba(212, 175, 55, 0.12) 35%, rgba(6, 6, 9, 0.98) 85%)",
+          "radial-gradient(circle at 50% 35%, rgba(124, 58, 237, 0.28) 0%, rgba(76, 29, 149, 0.15) 35%, rgba(0, 0, 0, 0.98) 85%)",
       }}
     >
       {/* 1. Fullscreen WebGL2 Swarm Cursor Particle Simulation */}
       <SwarmCursor
-        color="#D4AF37"
-        accentColor="#A855F7"
+        color="#7C3AED"
+        accentColor="#38BDF8"
         count={1200}
         size={3.4}
         shape="dot"
@@ -141,10 +141,10 @@ export function AuthGateway({ onAuthenticated }: AuthGatewayProps) {
           ref={cardRef}
           onPointerMove={handlePointerMove}
           onPointerLeave={handlePointerLeave}
-          className={`w-full rounded-3xl border transition-all duration-300 relative overflow-hidden backdrop-blur-2xl shadow-2xl ring-1 ring-white/10 ${
+          className={`w-full rounded-3xl border transition-all duration-300 relative overflow-hidden bg-transparent shadow-2xl ring-1 ring-white/10 ${
             is3D
-              ? "bg-[#08080C]/40 border-[#D4AF37]/30 shadow-[#7C3AED]/20 hover:shadow-[#D4AF37]/25 hover:border-[#D4AF37]/45"
-              : "bg-[#0A0A10]/45 border-white/15 shadow-black/80 hover:border-white/25"
+              ? "border-[#7C3AED]/35 shadow-[#7C3AED]/25 hover:shadow-[#7C3AED]/35 hover:border-[#7C3AED]/55"
+              : "border-white/20 shadow-black/80 hover:border-white/30"
           }`}
           style={{
             transform: is3D
@@ -159,7 +159,7 @@ export function AuthGateway({ onAuthenticated }: AuthGatewayProps) {
             <div
               className="absolute inset-0 pointer-events-none rounded-3xl transition-opacity duration-300"
               style={{
-                background: `radial-gradient(circle at ${tilt.gx}% ${tilt.gy}%, rgba(212, 175, 55, 0.16) 0%, rgba(124, 58, 237, 0.10) 35%, transparent 70%)`,
+                background: `radial-gradient(circle at ${tilt.gx}% ${tilt.gy}%, rgba(124, 58, 237, 0.20) 0%, rgba(56, 189, 248, 0.08) 35%, transparent 70%)`,
                 transform: "translateZ(1px)",
               }}
             />
@@ -172,8 +172,8 @@ export function AuthGateway({ onAuthenticated }: AuthGatewayProps) {
               style={{ transform: is3D ? "translateZ(30px)" : "none" }}
             >
               {/* ASIC Compliance Badge */}
-              <div className="inline-flex items-center space-x-2 px-3 py-1 rounded-full bg-[#D4AF37]/10 border border-[#D4AF37]/30 text-[#E8C860] text-xs font-semibold tracking-wide w-fit">
-                <Shield className="w-3.5 h-3.5 text-[#D4AF37]" />
+              <div className="inline-flex items-center space-x-2 px-3 py-1 rounded-full bg-[#7C3AED]/15 border border-[#7C3AED]/30 text-[#A78BFA] text-xs font-semibold tracking-wide w-fit">
+                <Shield className="w-3.5 h-3.5 text-[#A78BFA]" />
                 <span>ASIC RG 244 • Sovereign Vault</span>
               </div>
 
@@ -205,7 +205,7 @@ export function AuthGateway({ onAuthenticated }: AuthGatewayProps) {
                   }`}
                   title="Render form in 3D spatial holographic mode with tilt parallax"
                 >
-                  <Box className="w-3.5 h-3.5 text-[#D4AF37]" />
+                  <Box className="w-3.5 h-3.5 text-[#A78BFA]" />
                   <span>3D Spatial</span>
                 </button>
               </div>
@@ -219,7 +219,7 @@ export function AuthGateway({ onAuthenticated }: AuthGatewayProps) {
               <div className="flex items-center justify-between">
                 <h1 className="text-2xl sm:text-3xl font-black tracking-tight text-white flex items-center space-x-2">
                   <span>Aether Sovereign</span>
-                  <span className="text-xs px-2 py-0.5 rounded-md font-mono bg-[#D4AF37]/20 border border-[#D4AF37]/40 text-[#E8C860]">
+                  <span className="text-xs px-2 py-0.5 rounded-md font-mono bg-[#7C3AED]/20 border border-[#7C3AED]/40 text-[#DDD6FE]">
                     v2.6
                   </span>
                 </h1>
@@ -229,7 +229,7 @@ export function AuthGateway({ onAuthenticated }: AuthGatewayProps) {
                   type="button"
                   onClick={handleUseDemo}
                   title="Auto-fill verified demo administrator credentials"
-                  className="text-[11px] text-[#D4AF37] hover:underline font-medium bg-[#D4AF37]/10 px-2.5 py-1 rounded-md border border-[#D4AF37]/20 hover:bg-[#D4AF37]/20 transition-all"
+                  className="text-[11px] text-[#A78BFA] hover:text-white font-medium bg-[#7C3AED]/15 px-2.5 py-1 rounded-md border border-[#7C3AED]/30 hover:bg-[#7C3AED]/25 transition-all"
                 >
                   Auto-fill Demo Admin
                 </button>
@@ -243,7 +243,7 @@ export function AuthGateway({ onAuthenticated }: AuthGatewayProps) {
               <div className="pt-1 flex items-center space-x-2 text-[11px]">
                 {is3D ? (
                   <span className="inline-flex items-center space-x-1.5 text-[#A78BFA] bg-[#7C3AED]/15 px-2.5 py-0.5 rounded-full border border-[#7C3AED]/30 font-medium">
-                    <Sparkles className="w-3 h-3 text-[#D4AF37]" />
+                    <Sparkles className="w-3 h-3 text-[#A78BFA]" />
                     <span>3D Holographic Render Active • Cursor Tilt & Depth Enabled</span>
                   </span>
                 ) : (
@@ -265,7 +265,7 @@ export function AuthGateway({ onAuthenticated }: AuthGatewayProps) {
                 onClick={() => { setTab("login"); setErrorMessage(null); }}
                 className={`text-sm font-semibold pb-2 border-b-2 transition-all ${
                   tab === "login"
-                    ? "text-[#D4AF37] border-[#D4AF37]"
+                    ? "text-white border-[#7C3AED] shadow-sm"
                     : "text-zinc-400 border-transparent hover:text-white"
                 }`}
               >
@@ -276,7 +276,7 @@ export function AuthGateway({ onAuthenticated }: AuthGatewayProps) {
                 onClick={() => { setTab("register"); setErrorMessage(null); }}
                 className={`text-sm font-semibold pb-2 border-b-2 transition-all ${
                   tab === "register"
-                    ? "text-[#D4AF37] border-[#D4AF37]"
+                    ? "text-white border-[#7C3AED] shadow-sm"
                     : "text-zinc-400 border-transparent hover:text-white"
                 }`}
               >
@@ -312,7 +312,7 @@ export function AuthGateway({ onAuthenticated }: AuthGatewayProps) {
                         value={fullName}
                         onChange={(e) => setFullName(e.target.value)}
                         placeholder="e.g. Alexander Sterling"
-                        className="w-full pl-10 pr-4 py-2.5 bg-white/[0.04] backdrop-blur-md border border-white/15 rounded-xl text-sm text-white placeholder-zinc-400 focus:outline-none focus:bg-white/[0.08] focus:border-[#D4AF37] focus:ring-1 focus:ring-[#D4AF37] transition-all shadow-inner"
+                        className="w-full pl-10 pr-4 py-2.5 bg-transparent border border-white/20 rounded-xl text-sm text-white placeholder-zinc-400 focus:outline-none focus:border-[#7C3AED] focus:ring-1 focus:ring-[#7C3AED] transition-all"
                       />
                     </div>
                   </div>
@@ -326,7 +326,7 @@ export function AuthGateway({ onAuthenticated }: AuthGatewayProps) {
                         value={familyTrustName}
                         onChange={(e) => setFamilyTrustName(e.target.value)}
                         placeholder="e.g. Sterling Family Office"
-                        className="w-full pl-10 pr-4 py-2.5 bg-white/[0.04] backdrop-blur-md border border-white/15 rounded-xl text-sm text-white placeholder-zinc-400 focus:outline-none focus:bg-white/[0.08] focus:border-[#D4AF37] focus:ring-1 focus:ring-[#D4AF37] transition-all shadow-inner"
+                        className="w-full pl-10 pr-4 py-2.5 bg-transparent border border-white/20 rounded-xl text-sm text-white placeholder-zinc-400 focus:outline-none focus:border-[#7C3AED] focus:ring-1 focus:ring-[#7C3AED] transition-all"
                       />
                     </div>
                   </div>
@@ -343,7 +343,7 @@ export function AuthGateway({ onAuthenticated }: AuthGatewayProps) {
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     placeholder="admin@sovereignfamily.com.au"
-                    className="w-full pl-10 pr-4 py-2.5 bg-white/[0.04] backdrop-blur-md border border-white/15 rounded-xl text-sm text-white placeholder-zinc-400 focus:outline-none focus:bg-white/[0.08] focus:border-[#D4AF37] focus:ring-1 focus:ring-[#D4AF37] transition-all shadow-inner"
+                    className="w-full pl-10 pr-4 py-2.5 bg-transparent border border-white/20 rounded-xl text-sm text-white placeholder-zinc-400 focus:outline-none focus:border-[#7C3AED] focus:ring-1 focus:ring-[#7C3AED] transition-all"
                   />
                 </div>
               </div>
@@ -358,7 +358,7 @@ export function AuthGateway({ onAuthenticated }: AuthGatewayProps) {
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     placeholder="••••••••••••••••"
-                    className="w-full pl-10 pr-4 py-2.5 bg-white/[0.04] backdrop-blur-md border border-white/15 rounded-xl text-sm text-white placeholder-zinc-400 focus:outline-none focus:bg-white/[0.08] focus:border-[#D4AF37] focus:ring-1 focus:ring-[#D4AF37] transition-all shadow-inner"
+                    className="w-full pl-10 pr-4 py-2.5 bg-transparent border border-white/20 rounded-xl text-sm text-white placeholder-zinc-400 focus:outline-none focus:border-[#7C3AED] focus:ring-1 focus:ring-[#7C3AED] transition-all"
                   />
                 </div>
               </div>
@@ -371,11 +371,11 @@ export function AuthGateway({ onAuthenticated }: AuthGatewayProps) {
                 <button
                   type="submit"
                   disabled={isLoading}
-                  className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-[#D4AF37] via-[#E8C860] to-[#D4AF37] hover:brightness-110 text-black font-bold text-sm flex items-center justify-center space-x-2 shadow-lg shadow-[#D4AF37]/25 transition-all disabled:opacity-50 cursor-pointer"
+                  className="w-full py-3.5 px-4 rounded-xl bg-gradient-to-r from-[#6D28D9] via-[#7C3AED] to-[#8B5CF6] hover:brightness-110 text-white font-semibold text-sm flex items-center justify-center space-x-2 shadow-lg shadow-[#7C3AED]/30 border border-purple-400/30 transition-all disabled:opacity-50 cursor-pointer active:scale-[0.99]"
                 >
                   {isLoading ? (
                     <>
-                      <Loader2 className="w-4 h-4 animate-spin text-black" />
+                      <Loader2 className="w-4 h-4 animate-spin text-white" />
                       <span>Verifying Fiduciary Security Clearance...</span>
                     </>
                   ) : (
@@ -385,7 +385,7 @@ export function AuthGateway({ onAuthenticated }: AuthGatewayProps) {
                           ? `Sign In to Sovereign Vault (${is3D ? "3D Spatial" : "2D Standard"})`
                           : "Create Sovereign Vault Account"}
                       </span>
-                      <ArrowRight className="w-4 h-4 text-black" />
+                      <ArrowRight className="w-4 h-4 text-white" />
                     </>
                   )}
                 </button>
@@ -398,7 +398,7 @@ export function AuthGateway({ onAuthenticated }: AuthGatewayProps) {
               style={{ transform: is3D ? "translateZ(15px)" : "none" }}
             >
               <p className="flex items-center justify-center space-x-1.5">
-                <Lock className="w-3 h-3 text-[#D4AF37]" />
+                <Lock className="w-3 h-3 text-[#A78BFA]" />
                 <span>Tenant-Isolated SQLite Storage & APP 8 Disclosed Cloud Sync</span>
               </p>
               <p>© 2026 Sovereign Wealth Intelligence • Australia (Cth)</p>
