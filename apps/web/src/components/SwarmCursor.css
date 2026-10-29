@@ -1,0 +1,33 @@
+/* SwarmCursor WebGL Canvas Overlay & Container */
+
+.swarm-cursor {
+  position: fixed !important;
+  inset: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  overflow: hidden !important;
+  pointer-events: none !important;
+  z-index: 1 !important;
+}
+
+.swarm-cursor-canvas {
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  display: block !important;
+  pointer-events: none !important;
+  background: transparent !important;
+}
+
+.swarm-cursor-content {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  z-index: 2;
+}
+
+.swarm-cursor-hidden,
+.swarm-cursor-hidden * {
+  cursor: none !important;
+}

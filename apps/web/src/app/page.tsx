@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import * as THREE from "three";
+import { Loader2 } from "lucide-react";
 import { Header } from "../components/Header";
 import { RegulatoryBanner } from "../components/RegulatoryBanner";
 import { SpatialScene } from "../components/SpatialScene";
@@ -15,48 +16,25 @@ import { VrLaunchModal } from "../components/VrLaunchModal";
 import { StereoViewer } from "../components/StereoViewer";
 import { DashboardPanel } from "../components/DashboardPanel";
 import { TableViewerModal } from "../components/TableViewerModal";
+import { AuthGateway } from "../components/AuthGateway";
+import { useAetherDashboards } from "../lib/useAetherDashboards";
+import { useVoiceEngineSetup } from "../lib/useVoiceEngineSetup";
+import { VoiceEngine } from "../lib/voice/VoiceEngine";
 import {
   ChatMessage,
   CitationItem,
-  Dashboard,
-  DashboardStatus,
   DocumentRecord,
-  HistoryTurn,
   ThinkingStage,
 } from "../types";
-import { createDashboard, fetchDocuments, fetchDocumentSuggestions, streamQuery, StreamEvent } from "../lib/api";
-import { hasOwnTopic, isDashboardRequest } from "../lib/charts/intent";
+import { fetchDocuments, fetchDocumentSuggestions, streamQuery, StreamEvent } from "../lib/api";
+import { isDashboardRequest } from "../lib/charts/intent";
 import { enterImmersiveVr } from "../lib/webxr";
-import { VoiceEngine } from "../lib/voice/VoiceEngine";
 import { useVoiceSnapshot, voiceStore } from "../lib/voice/voiceStore";
 import { EMPTY_SPATIAL_STATE, SpatialState } from "../lib/spatial/spatialPanels";
 import { spatialLayout } from "../lib/spatial/spatialLayout";
 import { layoutStore, useLayoutState } from "../lib/layout/layoutStore";
-
-const now = () => new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-const HISTORY_MESSAGES = 6;
-
-function buildHistory(messages: ChatMessage[]): HistoryTurn[] {
-  return messages
-    .filter((m) => (m.sender === "user" || m.sender === "assistant") && m.content && !m.streaming)
-    .slice(-HISTORY_MESSAGES)
-    .map((m) => ({ role: m.sender === "user" ? "user" : "assistant", content: m.content }));
-}
-
-function docCitation(doc: DocumentRecord): CitationItem {
-  const ext = doc.original_name.split(".").pop()?.toUpperCase() || "FILE";
-  return {
-    chunk_id: doc.file_hash,
-    document_id: doc.id,
-    document_name: doc.original_name,
-    page_number: 1,
-    is_table: /\.(xlsx|xls|csv)$/i.test(doc.original_name),
-    snippet:
-      `${ext} document • ${doc.total_pages} page(s) • ${(doc.file_size / 1024).toFixed(1)} KB\n` +
-      `Status: ${doc.status} • Uploaded: ${doc.uploaded_at ? new Date(doc.uploaded_at).toLocaleString() : "unknown"}\n` +
-      `SHA-256: ${doc.file_hash}\n\nAsk a question to retrieve cited passages from this document.`,
-  };
-}
+import { getAuthToken, fetchCurrentUser, setAuthToken, UserProfile } from "../lib/auth";
+import { now, buildHistory, docCitation } from "../lib/chatHelpers";
 
 export default function SovereignPavilionApp() {
   const [theme, setTheme] = useState<"dark" | "light">("light");
@@ -73,13 +51,8 @@ export default function SovereignPavilionApp() {
   const [isDocDrawerOpen, setIsDocDrawerOpen] = useState(false);
   const [isVrModalOpen, setIsVrModalOpen] = useState(false);
   const [isStereoOpen, setIsStereoOpen] = useState(false);
-  const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null);
-  const [dashboards, setDashboards] = useState<Dashboard[]>([]);
-  const [activeDashboardId, setActiveDashboardId] = useState<string | null>(null);
-  const [dashboardStatus, setDashboardStatus] = useState<Record<string, DashboardStatus>>({});
-  const [isDashboardOpen, setIsDashboardOpen] = useState(false);
-  const [showDashboardIn3D, setShowDashboardIn3D] = useState(true);
-  const [dashboardFocus, setDashboardFocus] = useState(0);
+  const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState<boolean>(true);
 
   const voice = useVoiceSnapshot();
   const layout = useLayoutState();
@@ -89,13 +62,68 @@ export default function SovereignPavilionApp() {
   const engineRef = useRef<VoiceEngine | null>(null);
   const startedAtRef = useRef(0);
   const spatialStateRef = useRef<SpatialState>(EMPTY_SPATIAL_STATE);
-  /** What each message's dashboard charts (so "Rebuild" reuses the real subject, not "create a graph"). */
-  const dashboardSourceRef = useRef<Record<string, { question: string; answer: string }>>({});
-  /** Assistant messages that are dashboard acknowledgements ("Created dashboard X"), updated in place. */
-  const ackIdsRef = useRef<Set<string>>(new Set());
   messagesRef.current = messages;
 
-  // ---------------------------------------------------------------- theme & data
+  const {
+    dashboards,
+    setDashboards,
+    activeDashboardId,
+    setActiveDashboardId,
+    dashboardStatus,
+    setDashboardStatus,
+    isDashboardOpen,
+    setIsDashboardOpen,
+    showDashboardIn3D,
+    setShowDashboardIn3D,
+    dashboardFocus,
+    setDashboardFocus,
+    buildDashboard,
+    lastAnswer,
+    handleDashboardRequest,
+    ackIdsRef,
+  } = useAetherDashboards({
+    selectedEntity,
+    activeView,
+    messagesRef,
+    engineRef,
+    setMessages,
+    setIsDialogueOpen,
+  });
+
+  // ---------------------------------------------------------------- authentication & theme
+  useEffect(() => {
+    async function initAuth() {
+      const token = getAuthToken();
+      if (!token) {
+        setIsAuthLoading(false);
+        return;
+      }
+      try {
+        const user = await fetchCurrentUser();
+        if (user) {
+          setCurrentUser(user);
+          const firstEntity = user.memberships?.[0]?.family_entity_id;
+          if (firstEntity) {
+            setSelectedEntity(firstEntity);
+          }
+        } else {
+          setAuthToken(null);
+        }
+      } catch {
+        setAuthToken(null);
+      } finally {
+        setIsAuthLoading(false);
+      }
+    }
+    initAuth();
+  }, []);
+
+  const handleSignOut = () => {
+    setAuthToken(null);
+    setCurrentUser(null);
+    setDocuments([]);
+    setMessages([]);
+  };
 
   useEffect(() => {
     let saved: "dark" | "light" | null = null;
@@ -126,9 +154,10 @@ export default function SovereignPavilionApp() {
   }, []);
 
   useEffect(() => {
+    if (!currentUser) return;
     loadDocuments();
-    fetchDocumentSuggestions(selectedEntity).then((s) => s.length && setSuggestions(s));
-  }, [selectedEntity, loadDocuments]);
+    fetchDocumentSuggestions(selectedEntity).then((s) => s.length && setSuggestions(s)).catch(() => {});
+  }, [currentUser, selectedEntity, loadDocuments]);
 
   const handleSelectDocument = useCallback((doc: DocumentRecord) => {
     const isTabular = Boolean(doc.is_table || doc.columns?.length || /\.(csv|xlsx|xls)$/i.test(doc.original_name));
@@ -138,93 +167,6 @@ export default function SovereignPavilionApp() {
       setSelectedCitation(docCitation(doc));
     }
   }, []);
-
-  // ---------------------------------------------------------------- dashboards
-
-  /**
-   * Build a dashboard. `msgId` is the assistant message whose question/answer it charts; `question`
-   * overrides (a "chart X" request with its own topic). Speaks the result in voice mode.
-   */
-  const buildDashboard = useCallback(
-    async (opts: { msgId: string; question?: string; answer?: string; speak?: boolean; ack?: boolean }) => {
-      const list = messagesRef.current;
-      const idx = list.findIndex((m) => m.id === opts.msgId);
-      const msg = idx >= 0 ? list[idx] : null;
-      const remembered = dashboardSourceRef.current[opts.msgId];
-      const question =
-        opts.question ||
-        remembered?.question ||
-        [...list.slice(0, Math.max(0, idx))].reverse().find((m) => m.sender === "user")?.content ||
-        msg?.content ||
-        "";
-      if (!question) return;
-      const answer = opts.answer ?? remembered?.answer ?? msg?.content ?? "";
-      dashboardSourceRef.current[opts.msgId] = { question, answer };
-      const setAck = (content: string) =>
-        opts.ack && setMessages((prev) => prev.map((m) => (m.id === opts.msgId ? { ...m, content } : m)));
-      setDashboardStatus((prev) => ({ ...prev, [opts.msgId]: { state: "loading" } }));
-      try {
-        const d = await createDashboard({ question, answer, entityId: selectedEntity });
-        setAck(`Created dashboard **${d.title}** for: ${question}`);
-        setDashboards((prev) => [...prev.filter((x) => x.id !== d.id), d].slice(-8));
-        setActiveDashboardId(d.id);
-        setShowDashboardIn3D(true);
-        setDashboardFocus((n) => n + 1);
-        if (activeView === "spatial") {
-          setIsDashboardOpen(false);
-        } else {
-          setIsDashboardOpen(true);
-        }
-        setDashboardStatus((prev) => ({ ...prev, [opts.msgId]: { state: "ready", dashboardId: d.id } }));
-        if (opts.speak) engineRef.current?.say(`Here is your dashboard: ${d.title}.`);
-      } catch (err: any) {
-        const message = err?.message || "Could not build a dashboard.";
-        setAck(`I couldn't build a dashboard for: ${question}`);
-        setDashboardStatus((prev) => ({ ...prev, [opts.msgId]: { state: "error", message } }));
-        if (opts.speak) engineRef.current?.say("Sorry, I couldn't build a dashboard for that.");
-      }
-    },
-    [selectedEntity]
-  );
-
-  /** Last finished assistant answer (what "create a graph" refers to). */
-  const lastAnswer = useCallback(
-    () => [...messagesRef.current].reverse().find((m) => m.sender === "assistant" && !m.streaming && m.content) || null,
-    []
-  );
-
-  /** "Create a graph" / "chart AAPL volume in 2008" typed or spoken: build a dashboard instead of answering. */
-  const handleDashboardRequest = useCallback(
-    (text: string, mode: "text" | "voice") => {
-      const own = hasOwnTopic(text);
-      const previous = lastAnswer();
-      if (!own && !previous) return false; // nothing to chart yet - let the normal answer flow handle it
-      const ackId = `ast-${Date.now()}`;
-      ackIdsRef.current.add(ackId);
-      const subject = own ? text : (previous && [...messagesRef.current].reverse().find((m) => m.sender === "user")?.content) || text;
-      const ack: ChatMessage = {
-        id: ackId,
-        sender: "assistant",
-        content: `Building a dashboard for: **${subject}**`,
-        timestamp: now(),
-        mode,
-      };
-      const userMsg: ChatMessage = { id: `user-${Date.now()}`, sender: "user", content: text, timestamp: now(), mode };
-      messagesRef.current = [...messagesRef.current, userMsg, ack];
-      setMessages(messagesRef.current);
-      setIsDialogueOpen(true);
-      if (mode === "voice") engineRef.current?.beginResponse();
-      buildDashboard({
-        msgId: ackId,
-        question: own ? text : subject,
-        answer: own ? "" : previous?.content,
-        speak: mode === "voice",
-        ack: true,
-      });
-      return true;
-    },
-    [buildDashboard, lastAnswer]
-  );
 
   // ---------------------------------------------------------------- querying
 
@@ -379,71 +321,19 @@ export default function SovereignPavilionApp() {
   }, []);
 
   // ---------------------------------------------------------------- voice
-
-  useEffect(() => {
-    const engine = new VoiceEngine({
-      onUtterance: (text) => runQueryRef.current(text, "voice"),
-      onInterrupt: () => {
-        abortRef.current?.abort();
-        abortRef.current = null;
-        setIsProcessing(false);
-      },
-    });
-    engineRef.current = engine;
-
-    // Start always-on microphone in standby mode (passively listening for "Hey Aether" / "Hi Aether")
-    engine.startStandby().catch(() => {});
-
-    // Ensure audio context and permissions unlock on first user click or keypress
-    const onUserGesture = () => {
-      engine.unlockAudio();
-    };
-    window.addEventListener("pointerdown", onUserGesture, { once: true });
-    window.addEventListener("keydown", onUserGesture, { once: true });
-
-    return () => {
-      window.removeEventListener("pointerdown", onUserGesture);
-      window.removeEventListener("keydown", onUserGesture);
-      engine.dispose();
-      engineRef.current = null;
-    };
-  }, []);
-
-  // When Aether is awakened by name or conversation starts, reveal the dialogue HUD
-  useEffect(() => {
-    if (voice.wakeWordDetected) {
-      setIsDialogueOpen(true);
-    }
-  }, [voice.wakeWordDetected]);
-
-  const toggleVoice = useCallback(() => {
-    const engine = engineRef.current;
-    if (!engine) return;
-    if (!engine.inConversation) {
-      setIsDialogueOpen(true);
-      abortRef.current?.abort();
-    }
-    engine.toggleConversation();
-  }, []);
-
-  /** Orb tap (mouse or VR controller): start talking, interrupt the assistant, or end voice mode. */
-  const handleOrbTap = useCallback(() => {
-    const engine = engineRef.current;
-    if (!engine) return;
-    const { conversation, phase } = voiceStore.get();
-    if (!conversation) return toggleVoice();
-    if (phase === "speaking") return engine.interrupt("orb");
-    engine.endConversation("orb");
-  }, [toggleVoice]);
-
-  const handleSpeakMessage = useCallback((msg: ChatMessage) => {
-    setSpeakingMessageId(msg.id);
-    engineRef.current?.speakText(msg.content);
-  }, []);
-
-  useEffect(() => {
-    if (!voice.readingAloud && voice.phase !== "speaking") setSpeakingMessageId(null);
-  }, [voice.readingAloud, voice.phase]);
+  const {
+    speakingMessageId,
+    toggleVoice,
+    handleOrbTap,
+    handleSpeakMessage,
+  } = useVoiceEngineSetup({
+    engineRef,
+    runQuery,
+    setIsDialogueOpen,
+    abortRef,
+    setIsProcessing,
+    enabled: Boolean(currentUser),
+  });
 
   // ---------------------------------------------------------------- 3D state feed
 
@@ -479,6 +369,32 @@ export default function SovereignPavilionApp() {
   const lastAssistant = [...messages].reverse().find((m) => m.sender === "assistant") || null;
   const isLight = theme === "light";
 
+  if (isAuthLoading) {
+    return (
+      <div className="fixed inset-0 bg-[#09090B] flex flex-col items-center justify-center space-y-4 text-zinc-400">
+        <Loader2 className="w-8 h-8 animate-spin text-[#D4AF37]" />
+        <span className="text-xs uppercase tracking-widest font-mono text-zinc-500">
+          Initializing Sovereign Security Perimeter...
+        </span>
+      </div>
+    );
+  }
+
+  if (!currentUser) {
+    return (
+      <AuthGateway
+        onAuthenticated={(user, mode) => {
+          setCurrentUser(user);
+          setActiveView(mode);
+          const firstEntity = user.memberships?.[0]?.family_entity_id;
+          if (firstEntity) {
+            setSelectedEntity(firstEntity);
+          }
+        }}
+      />
+    );
+  }
+
   return (
     <div
       className={`relative w-screen h-screen overflow-hidden transition-colors duration-300 ${
@@ -507,6 +423,8 @@ export default function SovereignPavilionApp() {
           layoutStore.resetAll();
           spatialLayout.reset();
         }}
+        userEmail={currentUser.email}
+        onSignOut={handleSignOut}
       />
 
       <main className="w-full h-full relative">

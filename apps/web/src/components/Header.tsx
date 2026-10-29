@@ -13,6 +13,7 @@ import {
   Lock,
   Unlock,
   LayoutGrid,
+  LogOut,
 } from "lucide-react";
 import { FloatingPanel } from "./FloatingPanel";
 
@@ -33,6 +34,8 @@ interface HeaderProps {
   layoutLocked: boolean;
   onToggleLayoutLock: () => void;
   onResetLayout: () => void;
+  userEmail?: string;
+  onSignOut?: () => void;
 }
 
 export function Header({
@@ -52,6 +55,8 @@ export function Header({
   layoutLocked,
   onToggleLayoutLock,
   onResetLayout,
+  userEmail,
+  onSignOut,
 }: HeaderProps) {
   const [webxrAvailable, setWebxrAvailable] = useState<boolean | null>(null);
 
@@ -245,6 +250,23 @@ export function Header({
               <Sun className="w-3.5 h-3.5 text-[#D4AF37]" />
             )}
           </button>
+
+          {/* User Sign Out */}
+          {onSignOut && (
+            <button
+              onClick={onSignOut}
+              title={`Signed in as ${userEmail || "Administrator"}. Click to Sign Out.`}
+              aria-label="Sign Out"
+              className={`flex items-center space-x-1 px-2.5 py-1.5 rounded-full border text-xs font-medium transition-all hover:scale-105 active:scale-95 ${
+                isLight
+                  ? "bg-black/5 hover:bg-red-50 text-black/70 hover:text-red-600 border-black/10 hover:border-red-200"
+                  : "bg-white/5 hover:bg-red-950/40 text-white/70 hover:text-red-400 border-white/10 hover:border-red-900/40"
+              }`}
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              <span className="hidden lg:inline text-[11px]">Sign Out</span>
+            </button>
+          )}
 
           {/* Apple Vision Pro "View in VR" Button */}
           <button
