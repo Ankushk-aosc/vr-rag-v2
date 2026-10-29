@@ -14,6 +14,7 @@ import { CitationInspector } from "../components/CitationInspector";
 import { VrLaunchModal } from "../components/VrLaunchModal";
 import { StereoViewer } from "../components/StereoViewer";
 import { DashboardPanel } from "../components/DashboardPanel";
+import { TableViewerModal } from "../components/TableViewerModal";
 import {
   ChatMessage,
   CitationItem,
@@ -68,6 +69,7 @@ export default function SovereignPavilionApp() {
   const [isDialogueOpen, setIsDialogueOpen] = useState(false);
   const [isThinkingOpen, setIsThinkingOpen] = useState(false);
   const [selectedCitation, setSelectedCitation] = useState<CitationItem | null>(null);
+  const [selectedTableDoc, setSelectedTableDoc] = useState<DocumentRecord | null>(null);
   const [isDocDrawerOpen, setIsDocDrawerOpen] = useState(false);
   const [isVrModalOpen, setIsVrModalOpen] = useState(false);
   const [isStereoOpen, setIsStereoOpen] = useState(false);
@@ -127,6 +129,15 @@ export default function SovereignPavilionApp() {
     loadDocuments();
     fetchDocumentSuggestions(selectedEntity).then((s) => s.length && setSuggestions(s));
   }, [selectedEntity, loadDocuments]);
+
+  const handleSelectDocument = useCallback((doc: DocumentRecord) => {
+    const isTabular = Boolean(doc.is_table || doc.columns?.length || /\.(csv|xlsx|xls)$/i.test(doc.original_name));
+    if (isTabular) {
+      setSelectedTableDoc(doc);
+    } else {
+      setSelectedCitation(docCitation(doc));
+    }
+  }, []);
 
   // ---------------------------------------------------------------- dashboards
 
@@ -503,7 +514,7 @@ export default function SovereignPavilionApp() {
           <div className="w-full h-full absolute inset-0">
             <SpatialScene
               onRendererReady={(r) => (rendererRef.current = r)}
-              onSelectDocument={(doc) => setSelectedCitation(docCitation(doc))}
+              onSelectDocument={handleSelectDocument}
               onOrbTap={handleOrbTap}
               onCreateDashboard={createDashboardForLast}
               onCloseDashboard={() => setShowDashboardIn3D(false)}
@@ -519,7 +530,7 @@ export default function SovereignPavilionApp() {
               documents={documents}
               selectedEntity={selectedEntity}
               onOpenUpload={() => setIsDocDrawerOpen(true)}
-              onSelectDocument={(doc) => setSelectedCitation(docCitation(doc))}
+              onSelectDocument={handleSelectDocument}
               theme={theme}
             />
           </div>
@@ -600,6 +611,12 @@ export default function SovereignPavilionApp() {
 
       <CitationInspector citation={selectedCitation} onClose={() => setSelectedCitation(null)} theme={theme} />
 
+      <TableViewerModal
+        document={selectedTableDoc}
+        onClose={() => setSelectedTableDoc(null)}
+        theme={theme}
+      />
+
       <DocumentDrawer
         isOpen={isDocDrawerOpen}
         onClose={() => setIsDocDrawerOpen(false)}
@@ -631,7 +648,7 @@ export default function SovereignPavilionApp() {
         documents={documents}
         stateRef={spatialStateRef}
         onOrbTap={handleOrbTap}
-        onSelectDocument={(doc) => setSelectedCitation(docCitation(doc))}
+        onSelectDocument={handleSelectDocument}
         onCreateDashboard={createDashboardForLast}
         onCloseDashboard={() => setShowDashboardIn3D(false)}
       />

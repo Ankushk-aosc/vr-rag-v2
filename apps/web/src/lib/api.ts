@@ -1,6 +1,35 @@
-import { DocumentRecord, CitationItem, StructuredData, ThinkingStage, HistoryTurn, Dashboard } from "../types";
+import { DocumentRecord, DocumentTableData, CitationItem, StructuredData, ThinkingStage, HistoryTurn, Dashboard } from "../types";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+/**
+ * Fetch paginated tabular records for a document with optional search filtering.
+ */
+export async function fetchDocumentTable(
+  documentId: string,
+  page: number = 1,
+  pageSize: number = 50,
+  search?: string
+): Promise<DocumentTableData | null> {
+  try {
+    const params = new URLSearchParams({
+      page: String(page),
+      page_size: String(pageSize),
+    });
+    if (search && search.trim()) {
+      params.set("search", search.trim());
+    }
+    const url = `${API_BASE_URL}/api/documents/${encodeURIComponent(documentId)}/table?${params}`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}: Failed to fetch document table`);
+    }
+    return await res.json();
+  } catch (err) {
+    console.warn("fetchDocumentTable error:", err);
+    return null;
+  }
+}
 
 /**
  * Fetch list of indexed documents for the selected family entity.
@@ -215,8 +244,16 @@ export interface UploadDocumentResult {
   total_vectors_indexed?: number;
 }
 
+export interface BatchUploadResult {
+  message: string;
+  total_files: number;
+  successful_files: number;
+  documents: DocumentRecord[];
+  errors: string[];
+}
+
 /**
- * Upload and index a financial document into local SQLite and Pinecone.
+ * Upload and index a financial document into Pinecone.
  */
 export async function uploadDocument(
   file: File,
@@ -236,6 +273,34 @@ export async function uploadDocument(
   if (!res.ok) {
     const errorBody = await res.json().catch(() => ({}));
     throw new Error(errorBody.detail || `Document upload failed with status ${res.status}`);
+  }
+
+  return await res.json();
+}
+
+/**
+ * Batch upload multiple financial documents into Pinecone (up to 100 MB per file).
+ */
+export async function uploadDocumentsBatch(
+  files: File[],
+  entityId: string = "default_family",
+  allowedRole: string = "family_member"
+): Promise<BatchUploadResult> {
+  const formData = new FormData();
+  for (const f of files) {
+    formData.append("files", f);
+  }
+  formData.append("family_entity_id", entityId);
+  formData.append("allowed_role", allowedRole);
+
+  const res = await fetch(`${API_BASE_URL}/api/documents/upload-batch`, {
+    method: "POST",
+    body: formData,
+  });
+
+  if (!res.ok) {
+    const errorBody = await res.json().catch(() => ({}));
+    throw new Error(errorBody.detail || `Batch upload failed with status ${res.status}`);
   }
 
   return await res.json();

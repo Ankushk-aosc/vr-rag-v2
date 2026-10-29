@@ -93,7 +93,7 @@ def parse_number(cell: str) -> Optional[float]:
 def describe_column(key: str) -> Column:
     low = key.lower()
     unit = "$" if "$" in key else "%" if "%" in key else ""
-    if "volume" in low:
+    if "volume" in low or "shares" in low:
         kind, unit = "volume", ""
     elif re.search(r"\bopen\b", low):
         kind = "open"
@@ -103,10 +103,16 @@ def describe_column(key: str) -> Column:
         kind = "low"
     elif re.search(r"\b(close|closing)\b", low):
         kind = "close"
-    elif any(w in low for w in ("return", "change", "growth", "yield")) or unit == "%":
+    elif any(w in low for w in ("return", "change", "growth", "yield", "rate", "pct", "percent")) or unit == "%":
         kind, unit = "change", "%"
-    elif any(w in low for w in ("price", "spread", "balance", "amount", "value", "revenue", "income")):
+    elif any(w in low for w in ("price", "spread", "balance", "amount", "value", "revenue", "income", "debt", "cost", "fee", "expense", "salary", "spending")):
         kind = "price"
+        if not unit:
+            unit = "$"
+    elif "score" in low or "fico" in low:
+        kind = "score"
+    elif any(w in low for w in ("age", "count", "num")):
+        kind = "count"
     else:
         kind = "other"
     if kind in ("open", "high", "low", "close") and not unit:
@@ -155,37 +161,93 @@ def build_datasets(chunks: List[Dict]) -> List[Dataset]:
                 "name": c.get("original_name") or "",
             })
             for r in rows:
-                g["rows"].setdefault(r[0], r)
+                g["rows"].setdefault(tuple(r), r)
 
     datasets: List[Dataset] = []
     for (doc_id, header), g in groups.items():
         rows = list(g["rows"].values())
         if len(rows) < MIN_ROWS:
             continue
-        x_is_date = sum(bool(ISO_DATE.match(r[0])) for r in rows) >= 0.9 * len(rows)
-        if x_is_date:
-            rows = sorted((r for r in rows if ISO_DATE.match(r[0])), key=lambda r: r[0])
+
+        col_lower = [h.lower().strip() for h in header]
+        has_ymd = "year" in col_lower and "month" in col_lower and "day" in col_lower
+        date_col_idx = None
+        if not has_ymd:
+            for idx, h in enumerate(col_lower):
+                if "date" in h:
+                    date_col_idx = idx
+                    break
+
+        x: List[str] = []
+        x_label = header[0]
+        x_is_date = False
+
+        if has_ymd:
+            y_i = col_lower.index("year")
+            m_i = col_lower.index("month")
+            d_i = col_lower.index("day")
+            valid_rows = []
+            synthesized_dates = []
+            for r in rows:
+                try:
+                    y_val = int(parse_number(r[y_i]) or 0)
+                    m_val = int(parse_number(r[m_i]) or 0)
+                    d_val = int(parse_number(r[d_i]) or 0)
+                    if 1900 <= y_val <= 2100 and 1 <= m_val <= 12 and 1 <= d_val <= 31:
+                        synthesized_dates.append(f"{y_val:04d}-{m_val:02d}-{d_val:02d}")
+                        valid_rows.append(r)
+                except Exception:
+                    continue
+            if len(valid_rows) >= MIN_ROWS and len(valid_rows) >= 0.7 * len(rows):
+                paired = sorted(zip(synthesized_dates, valid_rows), key=lambda p: p[0])
+                x = [p[0] for p in paired]
+                rows = [p[1] for p in paired]
+                x_label = "Date"
+                x_is_date = True
+        elif date_col_idx is not None:
+            raw_dates = [r[date_col_idx] for r in rows]
+            date_matches = [bool(ISO_DATE.match(d)) for d in raw_dates]
+            if sum(date_matches) >= 0.8 * len(rows):
+                paired = sorted(
+                    [(r[date_col_idx], r) for r in rows if ISO_DATE.match(r[date_col_idx])],
+                    key=lambda p: p[0]
+                )
+                x = [p[0] for p in paired]
+                rows = [p[1] for p in paired]
+                x_label = header[date_col_idx]
+                x_is_date = True
+
+        if not x:
+            x_is_date = sum(bool(ISO_DATE.match(r[0])) for r in rows) >= 0.9 * len(rows)
+            if x_is_date:
+                rows = sorted((r for r in rows if ISO_DATE.match(r[0])), key=lambda r: r[0])
+            x_label = header[0]
+            x = [r[0] for r in rows]
+
         columns: List[Column] = []
         values: Dict[str, List[Optional[float]]] = {}
         invalid: Dict[str, List[str]] = {}
-        for idx in range(1, len(header)):
+        for idx in range(len(header)):
+            if not has_ymd and ((x_is_date and idx == date_col_idx) or (not x_is_date and idx == 0)):
+                continue
+            if has_ymd and idx in (y_i, m_i, d_i):
+                continue
             raw = [r[idx] for r in rows]
             parsed = [parse_number(v) for v in raw]
             filled = [v for v in raw if v.strip()]
             numeric = [p for p in parsed if p is not None]
-            if not filled or len(numeric) < 0.9 * len(filled) or len(filled) < 0.8 * len(rows):
+            if not filled or len(numeric) < 0.8 * len(filled) or len(filled) < 0.7 * len(rows):
                 continue
             col = describe_column(header[idx])
             col.mostly_zero = sum(1 for p in numeric if p == 0) > 0.97 * len(numeric)
             if col.kind == "volume":
-                # A traded volume cannot be negative: these are corrupt source cells (typically a
-                # 32-bit integer overflow in the original export). Drop them rather than guess.
-                bad = [rows[i][0] for i, v in enumerate(parsed) if v is not None and v < 0]
+                bad = [x[i] for i, v in enumerate(parsed) if v is not None and v < 0]
                 if bad:
                     invalid[col.key] = bad
                     parsed = [None if (v is not None and v < 0) else v for v in parsed]
             columns.append(col)
             values[col.key] = parsed
+
         if not columns:
             continue
         name = names.get(doc_id) or g["name"] or "Indexed table"
@@ -193,8 +255,8 @@ def build_datasets(chunks: List[Dict]) -> List[Dataset]:
             id=hashlib.sha1(f"{doc_id}|{'|'.join(header)}".encode()).hexdigest()[:10],
             document_id=doc_id,
             document_name=name,
-            x_label=header[0],
-            x=[r[0] for r in rows],
+            x_label=x_label,
+            x=x,
             x_is_date=x_is_date,
             columns=columns,
             values=values,
@@ -206,7 +268,7 @@ def build_datasets(chunks: List[Dict]) -> List[Dataset]:
     # The same ledger is often indexed in several formats (csv, xlsx, docx...): keep the richest copy.
     best: Dict[Tuple, Dataset] = {}
     for d in datasets:
-        sig = (d.family_entity_id, len(d.x), d.x[0], d.x[-1])
+        sig = (d.family_entity_id, len(d.x), d.x[0] if d.x else "", d.x[-1] if d.x else "")
         cur = best.get(sig)
         if cur is None or len(d.columns) > len(cur.columns):
             best[sig] = d

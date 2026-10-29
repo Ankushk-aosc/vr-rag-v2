@@ -45,6 +45,21 @@ export interface DocumentRecord {
   family_entity_id: string;
   status: string;
   uploaded_at: string;
+  columns?: string[];
+  sample_rows?: string[][];
+  preview_text?: string;
+  is_table?: boolean;
+}
+
+export interface DocumentTableData {
+  document_id: string;
+  filename: string;
+  columns: string[];
+  rows: string[][];
+  total_rows: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
 }
 
 export interface ChatMessage {

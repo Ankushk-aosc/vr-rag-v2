@@ -1,3 +1,4 @@
+import json
 import logging
 import time
 from typing import Any, Dict, List, Optional
@@ -154,6 +155,55 @@ def query_similar_chunks(
 DOCUMENTS_REGISTRY_NAMESPACE = "documents_registry"
 
 
+def _hydrate_doc_meta(meta: Dict[str, Any]) -> Dict[str, Any]:
+    doc = dict(meta)
+    if "sample_rows" in doc and isinstance(doc["sample_rows"], str):
+        try:
+            doc["sample_rows"] = json.loads(doc["sample_rows"])
+        except Exception:
+            doc["sample_rows"] = []
+    if "columns" in doc and isinstance(doc["columns"], str):
+        try:
+            doc["columns"] = json.loads(doc["columns"])
+        except Exception:
+            doc["columns"] = []
+
+    # Self-healing fallback: If columns or sample_rows are missing, hydrate from first table chunk
+    if not doc.get("sample_rows") and doc.get("id"):
+        try:
+            index = get_index()
+            t0 = index.fetch(ids=[f"{doc['id']}_p1_t0"])
+            vecs = _field(t0, "vectors", {}) or {}
+            c0 = vecs.get(f"{doc['id']}_p1_t0")
+            if c0 and _field(c0, "metadata"):
+                cmeta = dict(_field(c0, "metadata"))
+                text = cmeta.get("text", "")
+                orig = cmeta.get("original_name")
+                if orig:
+                    doc["original_name"] = orig
+                    doc["filename"] = orig
+                lines = [l.strip() for l in text.splitlines() if l.strip()]
+                for i in range(len(lines) - 1):
+                    if "|" in lines[i] and "---" in lines[i + 1]:
+                        cols = [c.strip() for c in lines[i].strip("|").split("|")]
+                        rows = []
+                        for j in range(i + 2, min(i + 12, len(lines))):
+                            if "|" in lines[j]:
+                                r = [c.strip() for c in lines[j].strip("|").split("|")]
+                                if len(r) == len(cols):
+                                    rows.append(r)
+                        if cols and rows:
+                            doc["columns"] = cols
+                            doc["sample_rows"] = rows
+                            doc["is_table"] = True
+                            save_document_to_pinecone(doc)
+                        break
+        except Exception as e:
+            logger.debug(f"Dynamic chunk hydration skipped: {e}")
+
+    return doc
+
+
 def save_document_to_pinecone(doc: Dict[str, Any]) -> None:
     """
     Stores document metadata records directly in Pinecone's documents_registry namespace.
@@ -161,7 +211,13 @@ def save_document_to_pinecone(doc: Dict[str, Any]) -> None:
     """
     index = get_index()
     unit_vec = [1.0] + [0.0] * (settings.EMBEDDING_DIMENSION - 1)
-    
+
+    columns = [str(c) for c in doc.get("columns") or []]
+    sample_rows = doc.get("sample_rows") or []
+    sample_rows_json = json.dumps(sample_rows) if sample_rows else ""
+    preview_text = str(doc.get("preview_text") or "")[:500]
+    is_table = bool(doc.get("is_table", False))
+
     metadata = {
         "id": str(doc["id"]),
         "filename": str(doc["filename"]),
@@ -172,9 +228,13 @@ def save_document_to_pinecone(doc: Dict[str, Any]) -> None:
         "total_pages": int(doc.get("total_pages", 1)),
         "family_entity_id": str(doc.get("family_entity_id", "default_family")),
         "status": str(doc.get("status", "indexed")),
-        "uploaded_at": str(doc.get("uploaded_at", ""))
+        "uploaded_at": str(doc.get("uploaded_at", "")),
+        "columns": columns,
+        "sample_rows": sample_rows_json,
+        "preview_text": preview_text,
+        "is_table": is_table
     }
-    
+
     index.upsert(
         vectors=[{"id": str(doc["id"]), "values": unit_vec, "metadata": metadata}],
         namespace=DOCUMENTS_REGISTRY_NAMESPACE
@@ -198,7 +258,7 @@ def list_documents_from_pinecone(family_entity_id: str = "default_family") -> Li
         for match in _field(res, "matches", []) or []:
             meta = dict(_field(match, "metadata", {}) or {})
             if meta.get("family_entity_id") == family_entity_id or family_entity_id == "*":
-                docs.append(meta)
+                docs.append(_hydrate_doc_meta(meta))
         return docs
     except Exception as e:
         logger.error(f"Error querying documents from Pinecone: {e}")
@@ -214,7 +274,7 @@ def get_document_from_pinecone(doc_id: str) -> Optional[Dict[str, Any]]:
         res = index.fetch(ids=[doc_id], namespace=DOCUMENTS_REGISTRY_NAMESPACE)
         vectors = _field(res, "vectors", {}) or {}
         meta = _field(vectors.get(doc_id), "metadata")
-        return dict(meta) if meta else None
+        return _hydrate_doc_meta(dict(meta)) if meta else None
     except Exception as e:
         logger.error(f"Error fetching document from Pinecone: {e}")
         return None

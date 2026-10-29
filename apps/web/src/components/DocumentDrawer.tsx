@@ -12,7 +12,9 @@ import {
   FolderLock,
 } from "lucide-react";
 import { DocumentRecord } from "../types";
-import { uploadDocument } from "../lib/api";
+import { uploadDocument, uploadDocumentsBatch } from "../lib/api";
+
+const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100 MB per file
 
 interface DocumentDrawerProps {
   isOpen: boolean;
@@ -32,6 +34,7 @@ export function DocumentDrawer({
   theme = "dark",
 }: DocumentDrawerProps) {
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadStatusText, setUploadStatusText] = useState<string>("Parsing & Chunking Documents...");
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadSuccess, setUploadSuccess] = useState<string | null>(null);
   const [allowedRole, setAllowedRole] = useState("family_member");
@@ -41,26 +44,49 @@ export function DocumentDrawer({
   if (!isOpen) return null;
   const isLight = theme === "light";
 
-  const handleProcessFile = async (file: File) => {
+  const handleProcessFiles = async (files: File[]) => {
+    if (!files || files.length === 0) return;
     setIsUploading(true);
     setUploadError(null);
     setUploadSuccess(null);
 
+    // Validate individual file sizes
+    const oversized = files.filter((f) => f.size > MAX_FILE_SIZE);
+    if (oversized.length > 0) {
+      setUploadError(
+        `File(s) exceed 100 MB limit: ${oversized.map((f) => `"${f.name}" (${(f.size / (1024 * 1024)).toFixed(1)} MB)`).join(", ")}`
+      );
+      setIsUploading(false);
+      return;
+    }
+
     try {
-      const res = await uploadDocument(file, selectedEntity, allowedRole);
-      setUploadSuccess(`Indexed "${file.name}" successfully across ${res.document.total_pages} page(s).`);
+      setUploadStatusText(`Uploading & Indexing ${files.length} file(s) into Pinecone...`);
+      const res = await uploadDocumentsBatch(files, selectedEntity, allowedRole);
+
+      if (res.errors && res.errors.length > 0) {
+        if (res.successful_files > 0) {
+          setUploadSuccess(`Indexed ${res.successful_files} of ${res.total_files} file(s) into Pinecone.`);
+          setUploadError(`Errors: ${res.errors.join("; ")}`);
+        } else {
+          setUploadError(`Failed to process files: ${res.errors.join("; ")}`);
+        }
+      } else {
+        setUploadSuccess(`Indexed all ${res.successful_files} file(s) successfully into Pinecone.`);
+      }
+
       onDocumentUploaded();
       if (fileInputRef.current) fileInputRef.current.value = "";
     } catch (err: any) {
-      setUploadError(err.message || "Upload failed.");
+      setUploadError(err.message || "Batch upload failed.");
     } finally {
       setIsUploading(false);
     }
   };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) handleProcessFile(file);
+    const files = Array.from(e.target.files || []);
+    if (files.length > 0) await handleProcessFiles(files);
   };
 
   const handleDragOver = (e: React.DragEvent) => {
@@ -72,11 +98,11 @@ export function DocumentDrawer({
     setIsDragging(false);
   };
 
-  const handleDrop = (e: React.DragEvent) => {
+  const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
-    const file = e.dataTransfer.files?.[0];
-    if (file) handleProcessFile(file);
+    const files = Array.from(e.dataTransfer.files || []);
+    if (files.length > 0) await handleProcessFiles(files);
   };
 
   return (
@@ -151,7 +177,7 @@ export function DocumentDrawer({
                 Deposit Financial Document
               </h3>
               <p className={`text-xs max-w-xs mx-auto ${isLight ? "text-black/50" : "text-white/50"}`}>
-                ATO Notices of Assessment, Super Statements, Macquarie Wrap PDFs, DOCX, or XLSX
+                ATO Notices of Assessment, Super Statements, Macquarie Wrap PDFs, DOCX, or XLSX (up to 100 MB)
               </p>
             </div>
 
@@ -177,7 +203,8 @@ export function DocumentDrawer({
             <input
               ref={fileInputRef}
               type="file"
-              accept=".pdf,.docx,.doc,.xlsx,.xls,.txt"
+              multiple
+              accept=".pdf,.docx,.doc,.xlsx,.xls,.txt,.csv,.md"
               onChange={handleFileChange}
               disabled={isUploading}
               className="hidden"
@@ -195,12 +222,12 @@ export function DocumentDrawer({
               {isUploading ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>Parsing & Chunking Document...</span>
+                  <span>{uploadStatusText}</span>
                 </>
               ) : (
                 <>
                   <Upload className="w-4 h-4" />
-                  <span>Select Financial File</span>
+                  <span>Select Financial Files</span>
                 </>
               )}
             </label>

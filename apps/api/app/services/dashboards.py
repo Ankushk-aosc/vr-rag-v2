@@ -362,14 +362,20 @@ def default_plan(question: str, answer: str, ds: Dataset) -> Dict[str, Any]:
         plan["kpis"].append({"label": "Best Single Gain", "column": change.key, "stat": "max"})
 
     # Dynamic multi-chart executive layout:
-    # 1. Price trend (smooth area)
-    plan["charts"].append({"type": "area", "title": f"{close.label} Price Trend", "columns": [close.key]})
-    # 2. Volume (bar)
+    # 1. Price/Amount trend (smooth area)
+    plan["charts"].append({"type": "area", "title": f"{close.label} Trend", "columns": [close.key]})
+    # 2. Volume or Spend bar chart
     if volume:
         plan["charts"].append({"type": "bar", "title": "Trading Volume Activity", "columns": [volume.key]})
-    # 3. Performance / Returns (diverging bar)
+    elif ds.x_is_date:
+        plan["charts"].append({"type": "bar", "title": f"Total {close.label} by Period", "columns": [close.key], "agg": "sum"})
+    # 3. Performance / Returns or Average Trajectory
     if change:
         plan["charts"].append({"type": "diverging_bar", "title": "Performance: Gains vs Losses", "columns": [change.key]})
+    elif ds.x_is_date:
+        plan["charts"].append({"type": "line", "title": f"Average {close.label} Trajectory", "columns": [close.key], "agg": "mean"})
+        plan["kpis"].append({"label": f"Total {close.label.lower()}", "column": close.key, "stat": "sum"})
+        plan["kpis"].append({"label": f"Average {close.label.lower()}", "column": close.key, "stat": "mean"})
     # 4. Spread / Volatility (if available)
     if spread_col:
         plan["charts"].append({"type": "line", "title": "Intraday Price Spread", "columns": [spread_col.key]})
@@ -635,6 +641,34 @@ def facts_dashboard(question: str, answer: str) -> Optional[Dict[str, Any]]:
     }
 
 
+def select_best_dataset(question: str, answer: str, datasets: List[Dataset]) -> Dataset:
+    if not datasets:
+        raise LookupError("No datasets available")
+    if len(datasets) == 1:
+        return datasets[0]
+    text = (question + " " + answer).lower()
+    best_ds = datasets[0]
+    best_score = -1.0
+    for ds in datasets:
+        score = 0.0
+        doc_words = set(re.findall(r"[a-z0-9]+", ds.document_name.lower()))
+        for w in doc_words:
+            if len(w) >= 3 and w in text:
+                score += 3.0
+        for c in ds.columns:
+            c_words = set(re.findall(r"[a-z0-9]+", c.label.lower()))
+            for cw in c_words:
+                if len(cw) >= 3 and cw in text:
+                    score += 1.5
+        years = re.findall(r"\b(19[89]\d|20[0-4]\d)\b", text)
+        if years and ds.x_is_date:
+            score += 2.0
+        if score > best_score:
+            best_score = score
+            best_ds = ds
+    return best_ds
+
+
 async def build_dashboard(question: str, answer: str, family_entity_id: str, user_roles: List[str]) -> Dict[str, Any]:
     datasets = await asyncio.to_thread(get_datasets, family_entity_id, user_roles)
     if not datasets:
@@ -642,13 +676,15 @@ async def build_dashboard(question: str, answer: str, family_entity_id: str, use
         if facts:
             return facts
         raise LookupError("No tables with numeric data were found in your indexed documents to chart.")
-    fallback = default_plan(question, answer, datasets[0])
-    plan = await llm_plan(question, answer, [d.catalog_entry() for d in datasets[:4]], fallback)
+    primary_ds = select_best_dataset(question, answer, datasets)
+    ordered_datasets = [primary_ds] + [d for d in datasets if d.id != primary_ds.id]
+    fallback = default_plan(question, answer, primary_ds)
+    plan = await llm_plan(question, answer, [d.catalog_entry() for d in ordered_datasets[:4]], fallback)
     source = "ai"
     if not plan or not isinstance(plan, dict) or not plan.get("charts"):
         plan, source = fallback, "default"
     try:
-        return resolve(plan, question, datasets, source)
+        return resolve(plan, question, ordered_datasets, source)
     except Exception as e:
         logger.warning("AI dashboard plan could not be resolved (%s); using default plan", e)
-        return resolve(fallback, question, datasets, "default")
+        return resolve(fallback, question, ordered_datasets, "default")
