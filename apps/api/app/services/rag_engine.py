@@ -225,11 +225,13 @@ def _citations_for(passages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         snippet = (p.get("focused_text") or p.get("text") or "").strip().replace("\n", " ")
         if len(snippet) > 220:
             snippet = snippet[:220].rstrip() + "..."
+        page_num = p.get("page_no") or p.get("page_number", 1)
         citations.append({
             "ref": i,
             "document_id": doc_id,
             "document_name": name,
-            "page_number": p.get("page_number", 1),
+            "page_number": page_num,
+            "page_no": page_num,
             "is_table": p.get("is_table", False),
             "section_title": p.get("section_title"),
             "snippet": snippet,

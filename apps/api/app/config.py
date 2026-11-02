@@ -80,5 +80,14 @@ class Settings(BaseSettings):
     TENANT_DAILY_TOKEN_CAP: int = 0          # 4b only
     USER_DAILY_TOKEN_CAP: int = 0            # 4b only
 
+    # Phase 2 OCR Settings
+    OCR_ENGINE: str = "tesseract"       # tesseract | textract | noop
+    OCR_LANG: str = "eng"
+    OCR_MIN_CONFIDENCE: float = 0.60    # Avg page confidence threshold
+    OCR_PREPROCESS_ENABLED: bool = True
+    OCR_PDF_TEXT_THRESHOLD: int = 50    # Minimum chars to consider PDF page born-digital
+    S3_BUCKET_NAME: Optional[str] = None
+    AWS_REGION: str = "us-east-1"
+
 
 settings = Settings()

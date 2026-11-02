@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 
 from app.schemas.document import BatchDocumentUploadResponse, DocumentResponse, DocumentTableResponse, DocumentUploadResponse
 from app.services import auth, chunker, embeddings, extractor, pinecone_service
+from app.services.storage import storage_service
 from app.services.lexical_index import lexical_index
 from app.services.table_reader import read_document_table_data
 from app.db import sqlite
@@ -22,7 +23,13 @@ ALLOWED_MIME_TYPES = {
     "text/plain": ".txt",
     "text/markdown": ".md",
     "text/csv": ".csv",
-    "application/csv": ".csv"
+    "application/csv": ".csv",
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/tiff": ".tiff",
+    "image/tif": ".tiff",
+    "image/webp": ".webp",
 }
 
 import logging
@@ -63,7 +70,7 @@ async def _process_single_upload(
     if file_ext not in ALLOWED_MIME_TYPES.values():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Unsupported file format '{file_ext}'. Allowed formats: PDF, DOCX, XLSX, TXT, CSV, MD."
+            detail=f"Unsupported file format '{file_ext}'. Allowed formats: PDF, DOCX, XLSX, TXT, CSV, MD, PNG, JPG, JPEG, TIFF."
         )
 
     doc_id = str(uuid.uuid4())
@@ -109,14 +116,23 @@ async def _process_single_upload(
                 detail=f"A document with identical content '{existing_doc.get('original_name')}' already exists in this family vault."
             )
 
+        # Persist original document to S3 or sovereign local storage
+        try:
+            storage_service.persist_original(tmp_path, doc_id, stored_filename)
+        except Exception as se:
+            logger.warning("Storage persistence warning: %s", se)
+
         # 3. Offload document parsing off the event loop (Audit F3)
         try:
             pages = await asyncio.to_thread(extractor.extract_document, tmp_path, file.content_type or "")
         except HTTPException:
+            storage_service.delete_stored(doc_id, stored_filename)
             raise
         except ValueError as ve:
+            storage_service.delete_stored(doc_id, stored_filename)
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
         except Exception as e:
+            storage_service.delete_stored(doc_id, stored_filename)
             logger.error("Document extraction error: %s", e)
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -140,9 +156,23 @@ async def _process_single_upload(
             detail=f"Document '{safe_filename}' contains no extractable text."
         )
 
-    # Add original sanitized filename to each chunk metadata
+    # Add original sanitized filename and OCR/tenant metadata to each chunk
+    conf_values = []
+    for p in pages:
+        val = getattr(p, "confidence", 1.0)
+        if isinstance(val, (int, float)):
+            conf_values.append(float(val))
+        else:
+            conf_values.append(1.0)
+    avg_conf = (sum(conf_values) / len(conf_values)) if conf_values else 1.0
+    is_low_conf = avg_conf < getattr(settings, "OCR_MIN_CONFIDENCE", 0.6)
+
     for c in chunks:
         c["original_name"] = safe_filename
+        c["allowed_role"] = allowed_role
+        c["family_entity_id"] = family_entity_id
+        c["embedder_model"] = getattr(settings, "EMBEDDER_MODEL", None) or getattr(settings, "EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+        c["embedder_dim"] = getattr(settings, "EMBEDDER_DIM", None) or getattr(settings, "EMBEDDING_DIMENSION", 384)
 
     # 5. Extract real table headers, sample data rows, or text preview
     extracted_columns: List[str] = []
@@ -190,7 +220,9 @@ async def _process_single_upload(
         "columns": extracted_columns,
         "sample_rows": extracted_sample_rows,
         "preview_text": extracted_preview_text,
-        "is_table": is_table_doc or file_ext in [".csv", ".xlsx", ".xls"]
+        "is_table": is_table_doc or file_ext in [".csv", ".xlsx", ".xls"],
+        "low_confidence": is_low_conf,
+        "ocr_confidence": avg_conf
     }
     sqlite.insert_document(doc_record)
     sqlite.insert_document_acl(document_id=doc_id, family_entity_id=family_entity_id, allowed_role=allowed_role)
@@ -227,6 +259,10 @@ async def _process_single_upload(
         logger.error("Vector ingestion failed for document %s: %s", doc_id, e)
         try:
             pinecone_service.delete_document_from_pinecone(doc_id, family_entity_id=family_entity_id)
+        except Exception:
+            pass
+        try:
+            storage_service.delete_stored(doc_id, stored_filename)
         except Exception:
             pass
         sqlite.update_document_status(doc_id, "failed")

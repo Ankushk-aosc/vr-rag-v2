@@ -1,23 +1,46 @@
+import io
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+
+from app.config import settings
 
 
 class ExtractedPage:
-    def __init__(self, page_number: int, text: str, tables: List[str] = None):
+    def __init__(
+        self,
+        page_number: int,
+        text: str,
+        tables: List[str] = None,
+        confidence: float = 1.0,
+        blocks: List[Dict[str, Any]] = None,
+        engine: str = "digital",
+        is_scanned: bool = False,
+    ):
         self.page_number = page_number
+        self.page_no = page_number
         self.text = text
         self.tables = tables or []
+        self.confidence = confidence
+        self.blocks = blocks or []
+        self.engine = engine
+        self.is_scanned = is_scanned
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "page_number": self.page_number,
+            "page_no": self.page_no,
             "text": self.text,
-            "tables": self.tables
+            "tables": self.tables,
+            "confidence": self.confidence,
+            "blocks": self.blocks,
+            "engine": self.engine,
+            "is_scanned": self.is_scanned,
         }
 
 
 MAX_PDF_PAGES = 200
 MAX_CSV_ROWS = 50_000
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tiff", ".tif", ".bmp", ".webp"}
 
 
 def extract_pdf(file_path: Path) -> List[ExtractedPage]:
@@ -39,6 +62,10 @@ def extract_pdf(file_path: Path) -> List[ExtractedPage]:
     for page_idx in range(len(doc)):
         page = doc[page_idx]
         text = page.get_text("text").strip()
+        confidence = 1.0
+        engine = "digital"
+        is_scanned = False
+        blocks = []
         
         extracted_tables = []
         if not skip_table_finder:
@@ -54,10 +81,76 @@ def extract_pdf(file_path: Path) -> List[ExtractedPage]:
                         extracted_tables.append("\n".join(md_rows))
             except Exception:
                 pass
+
+        # Per-page OCR routing: if text layer is empty or below threshold, run OCR
+        if len(text) < getattr(settings, "OCR_PDF_TEXT_THRESHOLD", 50):
+            try:
+                from app.services.ocr.router import get_ocr_engine
+                from app.services.ocr.preprocess import preprocess_image
+                from PIL import Image
+
+                ocr_engine = get_ocr_engine()
+                primary_engine = (settings.OCR_ENGINE or "tesseract").lower()
+
+                # Render page at 300 DPI
+                zoom = 300.0 / 72.0
+                mat = fitz.Matrix(zoom, zoom)
+                pix = page.get_pixmap(matrix=mat)
+                img = Image.open(io.BytesIO(pix.tobytes("png")))
+                processed_img = preprocess_image(img)
+
+                if hasattr(ocr_engine, "_ocr_image"):
+                    ocr_text, ocr_conf, ocr_blocks = ocr_engine._ocr_image(processed_img)
+                else:
+                    ocr_res = ocr_engine.extract(file_path)
+                    ocr_text = ocr_res.pages[page_idx].text if page_idx < len(ocr_res.pages) else ""
+                    ocr_conf = ocr_res.pages[page_idx].confidence if page_idx < len(ocr_res.pages) else 1.0
+                    ocr_blocks = ocr_res.pages[page_idx].blocks if page_idx < len(ocr_res.pages) else []
+
+                if ocr_text:
+                    text = ocr_text
+                    confidence = ocr_conf
+                    engine = primary_engine
+                    is_scanned = True
+                    blocks = ocr_blocks
+            except Exception:
+                pass
         
-        pages.append(ExtractedPage(page_number=page_idx + 1, text=text, tables=extracted_tables))
+        if not blocks and text:
+            blocks = [{"text": text, "bbox": [0.0, 0.0, float(page.rect.width), float(page.rect.height)], "confidence": confidence}]
+
+        pages.append(
+            ExtractedPage(
+                page_number=page_idx + 1,
+                text=text,
+                tables=extracted_tables,
+                confidence=confidence,
+                blocks=blocks,
+                engine=engine,
+                is_scanned=is_scanned,
+            )
+        )
         
     doc.close()
+    return pages
+
+
+def extract_image(file_path: Path, mime_type: str = "") -> List[ExtractedPage]:
+    from app.services.ocr.router import route_and_extract
+    result = route_and_extract(file_path, mime=mime_type)
+    pages = []
+    for p in result.pages:
+        pages.append(
+            ExtractedPage(
+                page_number=p.page_no,
+                text=p.text,
+                tables=[],
+                confidence=p.confidence,
+                blocks=p.blocks,
+                engine=p.engine,
+                is_scanned=p.is_scanned,
+            )
+        )
     return pages
 
 
@@ -75,7 +168,6 @@ def extract_docx(file_path: Path) -> List[ExtractedPage]:
             
     tables = []
     for table in doc.tables:
-        # Fast XML extraction across rows
         rows_data = []
         for tr in table._tbl.xpath('./w:tr'):
             row = [tc.xpath('string(.)').strip() for tc in tr.xpath('./w:tc')]
@@ -86,7 +178,6 @@ def extract_docx(file_path: Path) -> List[ExtractedPage]:
             header = rows_data[0]
             data_rows = rows_data[1:]
             
-            # Batch large tables into blocks of 50 rows preserving column headers
             batch_size = 50
             if len(data_rows) > batch_size:
                 for b_idx in range(0, len(data_rows), batch_size):
@@ -104,8 +195,18 @@ def extract_docx(file_path: Path) -> List[ExtractedPage]:
                 for r in data_rows:
                     md_table.append(" | ".join(r))
                 tables.append("\n".join(md_table))
-            
-    return [ExtractedPage(page_number=1, text="\n\n".join(full_text_parts), tables=tables)]
+                
+    full_text = "\n\n".join(full_text_parts)
+    return [
+        ExtractedPage(
+            page_number=1,
+            text=full_text,
+            tables=tables,
+            confidence=1.0,
+            engine="digital",
+            is_scanned=False,
+        )
+    ]
 
 
 def extract_xlsx(file_path: Path) -> List[ExtractedPage]:
@@ -113,26 +214,26 @@ def extract_xlsx(file_path: Path) -> List[ExtractedPage]:
         import openpyxl
     except ImportError:
         raise ImportError("openpyxl is required to extract Excel files. Please install with 'pip install openpyxl'.")
-    # Use read_only=True to prevent memory exhaustion on large spreadsheets (Audit F3)
     wb = openpyxl.load_workbook(str(file_path), read_only=True, data_only=True)
     pages: List[ExtractedPage] = []
 
     try:
         for idx, sheetname in enumerate(wb.sheetnames):
-            ws = wb[sheetname]
-            rows = list(ws.iter_rows(values_only=True))
-            if not rows:
-                continue
+            sheet = wb[sheetname]
+            valid_rows = []
+            for row in sheet.iter_rows(values_only=True):
+                str_row = [str(c or "").strip() for c in row]
+                if any(str_row):
+                    valid_rows.append(str_row)
 
-            valid_rows = [[str(cell if cell is not None else "").strip() for cell in r] for r in rows if any(r)]
             if not valid_rows:
                 continue
 
             header = valid_rows[0]
             data_rows = valid_rows[1:]
-
-            batch_size = 50
             sheet_tables = []
+            batch_size = 50
+
             if len(data_rows) > batch_size:
                 for b_idx in range(0, len(data_rows), batch_size):
                     batch = data_rows[b_idx:b_idx + batch_size]
@@ -145,14 +246,22 @@ def extract_xlsx(file_path: Path) -> List[ExtractedPage]:
                         md_lines.append(" | ".join(r))
                     sheet_tables.append("\n".join(md_lines))
             else:
-                md_lines = [f"### Sheet: {sheetname}"]
-                md_lines.append(" | ".join(header))
+                md_lines = [f"### Sheet: {sheetname}", " | ".join(header)]
                 md_lines.append(" | ".join(["---"] * len(header)))
                 for r in data_rows:
                     md_lines.append(" | ".join(r))
                 sheet_tables.append("\n".join(md_lines))
 
-            pages.append(ExtractedPage(page_number=idx + 1, text=f"Sheet: {sheetname}", tables=sheet_tables))
+            pages.append(
+                ExtractedPage(
+                    page_number=idx + 1,
+                    text=f"Sheet: {sheetname}",
+                    tables=sheet_tables,
+                    confidence=1.0,
+                    engine="digital",
+                    is_scanned=False,
+                )
+            )
     finally:
         wb.close()
 
@@ -186,7 +295,16 @@ def extract_csv(file_path: Path) -> List[ExtractedPage]:
         for r in batch:
             md_lines.append(" | ".join(r))
         table_str = "\n".join(md_lines)
-        pages.append(ExtractedPage(page_number=page_num, text=f"CSV Records Rows {start + 1}-{end}", tables=[table_str]))
+        pages.append(
+            ExtractedPage(
+                page_number=page_num,
+                text=f"CSV Records Rows {start + 1}-{end}",
+                tables=[table_str],
+                confidence=1.0,
+                engine="digital",
+                is_scanned=False,
+            )
+        )
 
     return pages
 
@@ -200,7 +318,9 @@ def extract_document(file_path: Path, mime_type: str = "") -> List[ExtractedPage
             f"Please upload modern formats (.docx, .xlsx) or PDF/CSV."
         )
 
-    if suffix == ".pdf" or "pdf" in mime_type:
+    if suffix in IMAGE_EXTENSIONS or mime_type.startswith("image/"):
+        return extract_image(file_path, mime_type)
+    elif suffix == ".pdf" or "pdf" in mime_type:
         return extract_pdf(file_path)
     elif suffix == ".docx" or "word" in mime_type:
         return extract_docx(file_path)
@@ -210,6 +330,6 @@ def extract_document(file_path: Path, mime_type: str = "") -> List[ExtractedPage
         return extract_csv(file_path)
     elif suffix in [".txt", ".md"]:
         text = file_path.read_text(encoding="utf-8", errors="replace")
-        return [ExtractedPage(page_number=1, text=text)]
+        return [ExtractedPage(page_number=1, text=text, confidence=1.0, engine="digital", is_scanned=False)]
     else:
         raise ValueError(f"Unsupported file format: {suffix} (MIME: {mime_type})")

@@ -85,16 +85,31 @@ def upsert_vectors(
     records = []
     for chunk, emb in zip(chunks, embeddings):
         text_content = chunk.get("content") or chunk.get("content_text") or chunk.get("text", "")
+        page_no = chunk.get("page_no") or chunk.get("page_number", 1)
+        role = chunk.get("allowed_role") or (allowed_roles[0] if allowed_roles else "family_member")
+        engine = chunk.get("ocr_engine", "digital")
+        conf = float(chunk.get("ocr_confidence", 1.0))
+        emb_model = chunk.get("embedder_model") or getattr(settings, "EMBEDDER_MODEL", None) or getattr(settings, "EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+        emb_dim = chunk.get("embedder_dim") or (len(emb) if emb else getattr(settings, "EMBEDDER_DIM", 384))
+        bbox = chunk.get("bbox") or [0.0, 0.0, 0.0, 0.0]
+
         records.append({
             "id": chunk["id"],
             "values": emb,
             "metadata": {
                 "chunk_id": chunk["id"],
                 "document_id": chunk["document_id"],
-                "page_number": chunk["page_number"],
+                "page_number": page_no,
+                "page_no": page_no,
                 "is_table": chunk.get("is_table", False),
                 "family_entity_id": family_entity_id,
                 "allowed_roles": allowed_roles,
+                "allowed_role": role,
+                "ocr_engine": engine,
+                "ocr_confidence": conf,
+                "embedder_model": emb_model,
+                "embedder_dim": emb_dim,
+                "bbox": bbox,
                 "text": text_content,
                 "original_name": chunk.get("original_name", "")
             }

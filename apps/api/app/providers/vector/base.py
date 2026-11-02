@@ -12,6 +12,7 @@ class VectorMeta:
     page_no: Optional[int] = None
     chunk_id: Optional[str] = None
     ocr_engine: Optional[str] = None
+    ocr_confidence: Optional[float] = None
     embedder_model: Optional[str] = None
     embedder_dim: Optional[int] = None
     extra: dict = field(default_factory=dict)

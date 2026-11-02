@@ -1,10 +1,11 @@
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Union
 from app.services.extractor import ExtractedPage
+from app.services.ocr.base import OcrPage
 
 
 def chunk_document(
     document_id: str,
-    pages: List[ExtractedPage],
+    pages: List[Union[ExtractedPage, OcrPage]],
     chunk_size: int = 600,
     chunk_overlap: int = 100
 ) -> List[Dict[str, Any]]:
@@ -12,17 +13,31 @@ def chunk_document(
     global_index = 0
 
     for page in pages:
+        page_no = getattr(page, "page_no", getattr(page, "page_number", 1))
+        engine = getattr(page, "engine", "digital") or "digital"
+        confidence = float(getattr(page, "confidence", 1.0))
+        blocks = getattr(page, "blocks", []) or []
+
+        page_bbox = [0.0, 0.0, 0.0, 0.0]
+        if blocks and isinstance(blocks[0], dict) and "bbox" in blocks[0]:
+            page_bbox = blocks[0]["bbox"]
+
         # First, preserve extracted tables as discrete, atomic chunks
-        for t_idx, table_md in enumerate(page.tables):
-            chunk_id = f"{document_id}_p{page.page_number}_t{t_idx}"
+        tables = getattr(page, "tables", None) or []
+        for t_idx, table_md in enumerate(tables):
+            chunk_id = f"{document_id}_p{page_no}_t{t_idx}"
             chunks.append({
                 "id": chunk_id,
                 "document_id": document_id,
                 "chunk_index": global_index,
-                "page_number": page.page_number,
-                "section_title": f"Page {page.page_number} Table",
+                "page_number": page_no,
+                "page_no": page_no,
+                "section_title": f"Page {page_no} Table",
                 "content": table_md,
-                "is_table": True
+                "is_table": True,
+                "ocr_engine": engine,
+                "ocr_confidence": confidence,
+                "bbox": page_bbox,
             })
             global_index += 1
 
@@ -61,15 +76,19 @@ def chunk_document(
             if current_len + unit_len > chunk_size and current_chunk_paras:
                 # Flush current chunk
                 chunk_text = "\n\n".join(current_chunk_paras)
-                chunk_id = f"{document_id}_p{page.page_number}_c{global_index}"
+                chunk_id = f"{document_id}_p{page_no}_c{global_index}"
                 chunks.append({
                     "id": chunk_id,
                     "document_id": document_id,
                     "chunk_index": global_index,
-                    "page_number": page.page_number,
-                    "section_title": f"Page {page.page_number}",
+                    "page_number": page_no,
+                    "page_no": page_no,
+                    "section_title": f"Page {page_no}",
                     "content": chunk_text,
-                    "is_table": False
+                    "is_table": False,
+                    "ocr_engine": engine,
+                    "ocr_confidence": confidence,
+                    "bbox": page_bbox,
                 })
                 global_index += 1
                 
@@ -87,15 +106,19 @@ def chunk_document(
         # Flush any trailing paragraph text
         if current_chunk_paras:
             chunk_text = "\n\n".join(current_chunk_paras)
-            chunk_id = f"{document_id}_p{page.page_number}_c{global_index}"
+            chunk_id = f"{document_id}_p{page_no}_c{global_index}"
             chunks.append({
                 "id": chunk_id,
                 "document_id": document_id,
                 "chunk_index": global_index,
-                "page_number": page.page_number,
-                "section_title": f"Page {page.page_number}",
+                "page_number": page_no,
+                "page_no": page_no,
+                "section_title": f"Page {page_no}",
                 "content": chunk_text,
-                "is_table": False
+                "is_table": False,
+                "ocr_engine": engine,
+                "ocr_confidence": confidence,
+                "bbox": page_bbox,
             })
             global_index += 1
 

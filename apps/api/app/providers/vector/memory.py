@@ -77,6 +77,7 @@ class InMemoryVectorStore(VectorStore):
                 "page_no": meta.page_no,
                 "chunk_id": meta.chunk_id,
                 "ocr_engine": meta.ocr_engine,
+                "ocr_confidence": getattr(meta, "ocr_confidence", 1.0),
                 "embedder_model": meta.embedder_model or self.embedder_model,
                 "embedder_dim": meta.embedder_dim or self.embedder_dim,
                 **meta.extra,

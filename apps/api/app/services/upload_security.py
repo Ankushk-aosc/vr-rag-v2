@@ -16,11 +16,16 @@ EXECUTABLE_HEADERS = [
     b"\xca\xfe\xba\xbe"  # Java Class / Mach-O Fat Binary
 ]
 
-# Magic numbers for allowed modern document types
+# Magic numbers for allowed modern document and image types
 MAGIC_BYTES = {
     ".pdf": b"%PDF",
     ".docx": b"PK\x03\x04",
     ".xlsx": b"PK\x03\x04",
+    ".png": b"\x89PNG\r\n\x1a\n",
+    ".jpg": b"\xff\xd8\xff",
+    ".jpeg": b"\xff\xd8\xff",
+    ".tiff": (b"II*\x00", b"MM\x00*"),
+    ".tif": (b"II*\x00", b"MM\x00*"),
 }
 
 # Maximum uncompressed size for zip archives (DOCX, XLSX): 150MB
@@ -68,6 +73,8 @@ def validate_file_magic_bytes(header: bytes, ext: str) -> bool:
     ext_lower = ext.lower()
     expected = MAGIC_BYTES.get(ext_lower)
     if expected:
+        if isinstance(expected, tuple):
+            return any(header.startswith(s) for s in expected)
         return header.startswith(expected)
 
     # Text formats (.txt, .md, .csv) must not start with binary executable headers
