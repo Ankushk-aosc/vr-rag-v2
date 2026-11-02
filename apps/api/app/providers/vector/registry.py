@@ -4,6 +4,7 @@ from app.providers.errors import ProviderNotConfigured
 from app.providers.vector.base import VectorStore
 from app.providers.vector.memory import InMemoryVectorStore
 from app.providers.vector.pinecone_store import PineconeVectorStore
+from app.providers.vector.pgvector_store import PgVectorStore
 
 VECTOR_REGISTRY: Dict[str, Callable[[Settings], VectorStore]] = {}
 
@@ -29,6 +30,16 @@ def _create_pinecone_vector_store(settings: Settings) -> VectorStore:
     if settings.PROVIDERS_STRICT and not store.is_configured():
         raise ProviderNotConfigured(
             "Vector store 'pinecone' requires PINECONE_API_KEY when PROVIDERS_STRICT=True."
+        )
+    return store
+
+
+@register_vector_store("pgvector")
+def _create_pgvector_vector_store(settings: Settings) -> VectorStore:
+    store = PgVectorStore(settings)
+    if settings.PROVIDERS_STRICT and not store.is_configured():
+        raise ProviderNotConfigured(
+            "Vector store 'pgvector' requires DATABASE_URL pointing to PostgreSQL when PROVIDERS_STRICT=True."
         )
     return store
 

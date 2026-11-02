@@ -230,6 +230,50 @@ class LexicalIndex:
                 all_chunks.extend(p.chunks)
             return all_chunks
 
+    def search_postgres(
+        self,
+        query: str,
+        family_entity_id: str,
+        user_roles: List[str],
+        top_k: int = 20,
+    ) -> List[Dict[str, Any]]:
+        from app.db.session import get_db_session
+        from sqlalchemy import text
+        try:
+            with get_db_session(family_ids=[family_entity_id]) as session:
+                engine = session.get_bind()
+                if not engine or engine.dialect.name != "postgresql":
+                    return []
+                stmt = text("""
+                    SELECT c.id as chunk_id, c.document_id, c.page_number, c.is_table,
+                           d.family_entity_id, d.original_name, c.content as text,
+                           ts_rank(to_tsvector('english', c.content), plainto_tsquery('english', :query)) as rank
+                    FROM document_chunks c
+                    JOIN documents d ON c.document_id = d.id
+                    WHERE d.family_entity_id = :family_id
+                      AND to_tsvector('english', c.content) @@ plainto_tsquery('english', :query)
+                    ORDER BY rank DESC
+                    LIMIT :top_k
+                """)
+                res = session.execute(stmt, {"query": query, "family_id": family_entity_id, "top_k": top_k}).all()
+                results = []
+                for r in res:
+                    results.append({
+                        "chunk_id": r.chunk_id,
+                        "document_id": r.document_id,
+                        "page_number": r.page_number,
+                        "is_table": r.is_table,
+                        "family_entity_id": r.family_entity_id,
+                        "allowed_roles": user_roles,
+                        "original_name": r.original_name,
+                        "text": r.text,
+                        "score": float(r.rank),
+                    })
+                return results
+        except Exception as e:
+            logger.warning("Postgres tsvector search error, falling back to BM25: %s", e)
+            return []
+
     def search(
         self,
         query: str,
@@ -238,6 +282,10 @@ class LexicalIndex:
         top_k: int = 20,
         required_tokens: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
+        if getattr(settings, "USE_POSTGRES_LEXICAL", False):
+            pg_res = self.search_postgres(query, family_entity_id, user_roles, top_k)
+            if pg_res:
+                return pg_res
         if not self.ready:
             return []
         q_tokens = list(dict.fromkeys(tokenize(query) + (required_tokens or [])))
@@ -264,7 +312,7 @@ class LexicalIndex:
                 total_loaded += len(chunks)
             except Exception as e:
                 logger.warning(f"Failed to load lexical cache {cache_file}: {e}")
-        return total_loaded
+            return total_loaded
 
     def build_from_pinecone(self) -> None:
         """Pull every default-namespace chunk from Pinecone into tenant partitions."""

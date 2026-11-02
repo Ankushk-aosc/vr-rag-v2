@@ -144,35 +144,7 @@ async def _process_single_upload(
     for c in chunks:
         c["original_name"] = safe_filename
 
-    # 5. Generate embeddings with all-MiniLM-L6-v2
-    chunk_texts = [c["content"] for c in chunks]
-    try:
-        chunk_embeddings = embeddings.embed_texts(chunk_texts)
-    except Exception as e:
-        logger.error("Embedding computation error: %s", e)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to compute embeddings. Vector ingestion halted."
-        )
-
-    # 6. Upsert vectors into Pinecone Cloud
-    roles_for_pinecone = ["family_admin"] if allowed_role == "family_admin" else ["family_admin", "family_member"]
-    total_vectors = 0
-    try:
-        total_vectors = pinecone_service.upsert_vectors(
-            chunks=chunks,
-            embeddings=chunk_embeddings,
-            family_entity_id=family_entity_id,
-            allowed_roles=roles_for_pinecone
-        )
-    except Exception as e:
-        logger.error("Pinecone vector upsert error: %s", e)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Vector database upsert failed. Please try again."
-        )
-
-    # 7. Extract real table headers, sample data rows, or text preview
+    # 5. Extract real table headers, sample data rows, or text preview
     extracted_columns: List[str] = []
     extracted_sample_rows: List[List[str]] = []
     extracted_preview_text: str = ""
@@ -203,7 +175,7 @@ async def _process_single_upload(
     if text_snippets:
         extracted_preview_text = " ".join(text_snippets)[:500]
 
-    # 8. Persist document record into SQLite System of Record & Pinecone Cloud Registry
+    # 6. Transactional Ingestion Step 1: Insert document as 'pending'
     doc_record = {
         "id": doc_id,
         "filename": stored_filename,
@@ -213,7 +185,7 @@ async def _process_single_upload(
         "file_hash": file_hash,
         "total_pages": total_pages,
         "family_entity_id": family_entity_id,
-        "status": "indexed" if total_vectors > 0 else "unindexed",
+        "status": "pending",
         "uploaded_at": datetime.now(timezone.utc).isoformat(),
         "columns": extracted_columns,
         "sample_rows": extracted_sample_rows,
@@ -234,6 +206,34 @@ async def _process_single_upload(
         }
         for c in chunks
     ])
+
+    # 7. Transactional Ingestion Step 2: Embed & Upsert Vectors
+    roles_for_pinecone = ["family_admin"] if allowed_role == "family_admin" else ["family_admin", "family_member"]
+    total_vectors = 0
+    try:
+        chunk_texts = [c["content"] for c in chunks]
+        chunk_embeddings = embeddings.embed_texts(chunk_texts)
+        total_vectors = pinecone_service.upsert_vectors(
+            chunks=chunks,
+            embeddings=chunk_embeddings,
+            family_entity_id=family_entity_id,
+            allowed_roles=roles_for_pinecone
+        )
+        # Step 3: Set status='indexed'
+        final_status = "indexed" if total_vectors > 0 else "unindexed"
+        sqlite.update_document_status(doc_id, final_status)
+        doc_record["status"] = final_status
+    except Exception as e:
+        logger.error("Vector ingestion failed for document %s: %s", doc_id, e)
+        try:
+            pinecone_service.delete_document_from_pinecone(doc_id, family_entity_id=family_entity_id)
+        except Exception:
+            pass
+        sqlite.update_document_status(doc_id, "failed")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Vector database upsert failed. Please try again."
+        )
 
     pinecone_service.save_document_to_pinecone(doc_record)
     pinecone_service.get_document_names(family_entity_id=family_entity_id, force=True)

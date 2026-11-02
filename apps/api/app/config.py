@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = "development"
     APP_SECRET_KEY: str = "dev-insecure-key-change-in-production"
     SQLITE_DB_PATH: str = "data/app.db"
+    DATABASE_URL: Optional[str] = None  # e.g. postgresql+psycopg://user:password@localhost:5432/vr_rag
+    USE_POSTGRES_LEXICAL: bool = False
     UPLOADS_DIR: str = "data/uploads"
     MAX_FILE_SIZE_MB: int = 100
 
