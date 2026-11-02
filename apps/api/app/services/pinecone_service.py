@@ -209,7 +209,11 @@ def save_document_to_pinecone(doc: Dict[str, Any]) -> None:
     Stores document metadata records directly in Pinecone's documents_registry namespace.
     Uses a normalized unit vector to satisfy cosine metric requirements.
     """
-    index = get_index()
+    try:
+        index = get_index()
+    except Exception as e:
+        logger.warning(f"Could not save document metadata to Pinecone (index unavailable): {e}")
+        return
     unit_vec = [1.0] + [0.0] * (settings.EMBEDDING_DIMENSION - 1)
 
     columns = [str(c) for c in doc.get("columns") or []]
@@ -245,7 +249,11 @@ def list_documents_from_pinecone(family_entity_id: str = "default_family") -> Li
     """
     Retrieves registered documents from Pinecone cloud storage strictly scoped to family entity.
     """
-    index = get_index()
+    try:
+        index = get_index()
+    except Exception as e:
+        logger.debug(f"Pinecone index unavailable: {e}")
+        return []
     unit_vec = [1.0] + [0.0] * (settings.EMBEDDING_DIMENSION - 1)
     try:
         res = index.query(
@@ -269,7 +277,11 @@ def get_document_from_pinecone(doc_id: str) -> Optional[Dict[str, Any]]:
     """
     Fetches a specific document metadata record from Pinecone cloud storage.
     """
-    index = get_index()
+    try:
+        index = get_index()
+    except Exception as e:
+        logger.debug(f"Pinecone index unavailable: {e}")
+        return None
     try:
         res = index.fetch(ids=[doc_id], namespace=DOCUMENTS_REGISTRY_NAMESPACE)
         vectors = _field(res, "vectors", {}) or {}
@@ -284,7 +296,11 @@ def delete_document_from_pinecone(doc_id: str, family_entity_id: str = "default_
     """
     Deletes document registry record and all associated vector chunks from Pinecone.
     """
-    index = get_index()
+    try:
+        index = get_index()
+    except Exception as e:
+        logger.debug(f"Pinecone index unavailable: {e}")
+        return
     # 1. Delete document metadata record from registry namespace
     try:
         index.delete(ids=[doc_id], namespace=DOCUMENTS_REGISTRY_NAMESPACE)
