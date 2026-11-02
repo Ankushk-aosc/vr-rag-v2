@@ -5,6 +5,9 @@ export const metadata: Metadata = {
   title: "Aether Sovereign | Spatial Financial Pavilion",
   description:
     "Aether Sovereign: Sovereign voice-first spatial financial intelligence pavilion for Australian family offices with stereoscopic VR WebXR spatial computing.",
+  icons: {
+    icon: "/icon.svg",
+  },
 };
 
 export const viewport: Viewport = {
