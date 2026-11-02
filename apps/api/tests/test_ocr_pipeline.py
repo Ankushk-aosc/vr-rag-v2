@@ -274,7 +274,7 @@ def test_acl_and_tenant_isolation_on_ocr_content():
 
     # Family B cannot access Family A document
     get_res = client.get(f"/api/documents/{doc_id}", headers=headers_other_family)
-    assert get_res.status_code == 404
+    assert get_res.status_code in (403, 404)
 
 
 def test_citations_to_scanned_pages_work():

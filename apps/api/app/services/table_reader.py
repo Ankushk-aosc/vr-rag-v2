@@ -49,13 +49,17 @@ def read_document_table_data(
             return columns, rows, total_rows, calc_pages
 
     # 2. Standard pagination: direct fetch chunk for requested page
-    index = pinecone_service.get_index()
     rows: List[List[str]] = []
     total_rows = 0
     target_chunk_id = f"{document_id}_p{page}_t0"
 
     try:
-        fetch_res = index.fetch(ids=[target_chunk_id])
+        index = pinecone_service.get_index()
+    except Exception:
+        index = None
+
+    try:
+        fetch_res = index.fetch(ids=[target_chunk_id]) if index else None
         vectors = getattr(fetch_res, "vectors", {}) or {}
         chunk = vectors.get(target_chunk_id)
 

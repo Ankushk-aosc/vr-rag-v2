@@ -79,7 +79,11 @@ def upsert_vectors(
     Stores vector coordinates along with full chunk text and metadata directly in Pinecone.
     Eliminates reliance on local disk or SQLite for chunk hydration.
     """
-    index = get_index()
+    try:
+        index = get_index()
+    except Exception as e:
+        logger.warning(f"Pinecone index unavailable for upsert: {e}")
+        return 0
     allowed_roles = allowed_roles or ["family_admin", "family_member"]
     
     records = []
@@ -137,7 +141,11 @@ def query_similar_chunks(
     Applies family entity and role filters directly inside Pinecone prior to similarity ranking.
     Returns matched chunks along with their full text content directly from Pinecone metadata.
     """
-    index = get_index()
+    try:
+        index = get_index()
+    except Exception as e:
+        logger.debug(f"Pinecone unavailable for similarity search: {e}")
+        return []
     user_roles = user_roles or ["family_admin", "family_member"]
     
     # Metadata filter to guarantee zero cross-family or unauthorized leakage

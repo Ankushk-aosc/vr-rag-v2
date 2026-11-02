@@ -400,10 +400,14 @@ async def list_documents(
 
     try:
         cloud_docs = pinecone_service.list_documents_from_pinecone(family_entity_id=target_entity)
-        return [DocumentResponse(**d) for d in cloud_docs]
+        if cloud_docs:
+            return [DocumentResponse(**d) for d in cloud_docs]
     except Exception as e:
-        logger.error(f"Error fetching documents from Pinecone: {e}")
-        return []
+        logger.debug(f"Pinecone document listing unavailable: {e}")
+
+    # Enterprise resilience: fallback to SQLite system of record
+    sqlite_docs = sqlite.get_documents(family_entity_id=target_entity)
+    return [DocumentResponse(**d) for d in sqlite_docs]
 
 
 @router.get("/suggestions", response_model=List[str])
@@ -412,7 +416,7 @@ async def get_document_suggestions(
     current_user: Dict[str, Any] = Depends(auth.get_current_user)
 ):
     """
-    Generate dynamic financial query suggestions based on actual indexed documents in Pinecone.
+    Generate dynamic financial query suggestions based on actual indexed documents in Pinecone or SQLite.
     """
     user_memberships = current_user.get("memberships") or []
     if not user_memberships:
@@ -432,8 +436,11 @@ async def get_document_suggestions(
     try:
         docs = pinecone_service.list_documents_from_pinecone(target_entity)
     except Exception as e:
-        logger.error(f"Error fetching suggestions from Pinecone: {e}")
+        logger.debug(f"Pinecone suggestions listing unavailable: {e}")
         docs = []
+
+    if not docs:
+        docs = sqlite.get_documents(family_entity_id=target_entity)
 
     if not docs:
         return [

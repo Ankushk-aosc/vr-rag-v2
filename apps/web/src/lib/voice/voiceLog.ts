@@ -17,10 +17,19 @@ let timer: ReturnType<typeof setTimeout> | null = null;
 function flush() {
   timer = null;
   if (!buffer.length) return;
+  const token = typeof window !== "undefined" ? localStorage.getItem("aether_auth_token") : null;
+  if (!token) {
+    // Drop diagnostics before authentication to prevent 401 request spam
+    buffer.length = 0;
+    return;
+  }
   const events = buffer.splice(0, buffer.length);
   fetch(`${API_BASE_URL}/api/voice/client-log`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
     body: JSON.stringify({ events, userAgent: navigator.userAgent.slice(0, 160) }),
   }).catch(() => {
     /* logging must never break voice */
