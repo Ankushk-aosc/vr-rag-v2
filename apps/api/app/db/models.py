@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from decimal import Decimal
 from typing import Optional
 from sqlalchemy import (
     Boolean,
@@ -9,6 +10,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -180,4 +182,32 @@ class RevokedTokenModel(Base):
 
     __table_args__ = (
         Index("idx_revoked_tokens_expires", "expires_at"),
+    )
+
+
+class LLMUsageModel(Base):
+    __tablename__ = "llm_usage"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    family_entity_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("family_entities.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[Optional[str]] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    route: Mapped[str] = mapped_column(String(255), nullable=False)
+    provider: Mapped[str] = mapped_column(String(100), nullable=False)
+    model: Mapped[str] = mapped_column(String(255), nullable=False)
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    completion_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    cost_usd: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 6), nullable=True)
+    run_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("idx_llm_usage_family_created", "family_entity_id", "created_at"),
+        Index("idx_llm_usage_user_created", "user_id", "created_at"),
     )

@@ -161,6 +161,28 @@ def init_db() -> None:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_audit_family ON audit_events(family_entity_id);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_events(user_id);")
 
+        # LLM Usage (Token budget & cost tracking)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS llm_usage (
+                id TEXT PRIMARY KEY,
+                family_entity_id TEXT NOT NULL,
+                user_id TEXT,
+                route TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                prompt_tokens INTEGER DEFAULT 0,
+                completion_tokens INTEGER DEFAULT 0,
+                total_tokens INTEGER DEFAULT 0,
+                cost_usd NUMERIC,
+                run_id TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (family_entity_id) REFERENCES family_entities(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_llm_usage_family_created ON llm_usage(family_entity_id, created_at);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_llm_usage_user_created ON llm_usage(user_id, created_at);")
+
         # Seed default family entity
         cursor.execute("""
             INSERT OR IGNORE INTO family_entities (id, name, entity_type)

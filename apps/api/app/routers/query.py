@@ -5,6 +5,7 @@ from fastapi.responses import StreamingResponse
 from app.schemas.query import QueryRequest, QueryResponse
 from app.services import auth, rag_engine
 from app.middleware.rate_limiter import rate_limit
+from app.middleware.token_budget import check_token_budget
 
 router = APIRouter(prefix="/api/query", tags=["Query"])
 
@@ -33,6 +34,8 @@ async def ask_question(
     current_user: Dict[str, Any] = Depends(auth.get_current_user)
 ):
     user_roles = resolve_roles(request.family_entity_id, current_user)
+    user_id = current_user.get("id")
+    check_token_budget(request.family_entity_id, user_id)
     try:
         result = await rag_engine.execute_rag_query(
             question=request.question,
@@ -41,6 +44,7 @@ async def ask_question(
             top_k=request.top_k,
             history=[h.model_dump() for h in request.history],
             mode=request.mode,
+            user_id=user_id,
         )
         return QueryResponse(**result)
     except rag_engine.RagError as e:
@@ -64,6 +68,8 @@ async def ask_question_stream(
     stage | sources | reasoning | answer | done | error
     """
     user_roles = resolve_roles(request.family_entity_id, current_user)
+    user_id = current_user.get("id")
+    check_token_budget(request.family_entity_id, user_id)
 
     async def event_source():
         try:
@@ -74,8 +80,11 @@ async def ask_question_stream(
                 top_k=request.top_k,
                 history=[h.model_dump() for h in request.history],
                 mode=request.mode,
+                user_id=user_id,
             ):
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        except HTTPException as he:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(he.detail), 'status_code': he.status_code})}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'message': f'Query execution error: {e}'})}\n\n"
 

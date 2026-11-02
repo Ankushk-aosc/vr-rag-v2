@@ -5,7 +5,7 @@ Pipeline (every stage is timed and streamed to the client as it happens):
   1. understand  - normalise dates, fold in conversation context for follow-ups
   2. search      - Pinecone dense search + BM25 keyword search, run concurrently
   3. rank        - reciprocal-rank fusion, exact-date boosting, per-document diversity
-  4. reasoning   - the model's own reasoning tokens (Groq reasoning_format="parsed")
+  4. reasoning   - the model's own reasoning tokens
   5. answer      - Markdown answer tokens with numbered citations
 
 `stream_rag_events` yields event dicts consumed by the SSE endpoint; `execute_rag_query`
@@ -17,15 +17,20 @@ import re
 import time
 from typing import Any, AsyncIterator, Dict, List, Optional, Set
 
+from fastapi import HTTPException
+
 from app.config import settings
+from app.middleware.token_budget import check_token_budget, guard_query_context
+from app.providers.factory import get_embedder, get_llm
 from app.services import embeddings, pinecone_service
+from app.services.grounding import verify_grounding
 from app.services.lexical_index import extract_dates, lexical_index
 from app.services.prompt_guard import (
     escape_evidence_text,
     escape_xml_attribute,
     sanitize_conversation_history,
 )
-from app.services.grounding import verify_grounding
+from app.services.usage import UsageRecorder
 
 logger = logging.getLogger(__name__)
 
@@ -64,18 +69,16 @@ no citation brackets. Say numbers naturally (e.g. "about 176 million shares", "$
 _groq_client = None
 _HISTORY_TURNS = 6
 _HISTORY_CHARS = 700
-# Groq's on-demand tier allows ~7k input tokens per minute; numeric ledger text is ~2.5 chars/token,
-# so the evidence budget keeps a request near 3k tokens and leaves room for a follow-up question.
 EVIDENCE_CHAR_BUDGET = 5200
 PASSAGE_CHAR_LIMIT = 1400
 
 
 def get_groq_client():
+    """Retained for backward compatibility with dashboard plan generation."""
     global _groq_client
     if settings.GROQ_API_KEY:
         from groq import AsyncGroq
         if _groq_client is None or getattr(_groq_client, "api_key", None) != settings.GROQ_API_KEY:
-            # retries are handled in stream_rag_events so the wait is visible in the thinking panel
             _groq_client = AsyncGroq(api_key=settings.GROQ_API_KEY, max_retries=0)
     return _groq_client
 
@@ -88,9 +91,9 @@ def _friendly_llm_error(err: Exception) -> str:
             "https://console.groq.com/settings/limits or set GROQ_MODEL to an enabled model."
         )
     if "invalid_api_key" in text or "401" in text:
-        return "Groq rejected the API key. Check GROQ_API_KEY in .env."
+        return "LLM rejected the API key. Check API keys in environment configuration."
     if "rate_limit" in text or "429" in text:
-        return "Groq rate limit reached. Wait a few seconds and try again."
+        return "LLM rate limit reached. Wait a few seconds and try again."
     return f"Language model request failed: {text[:300]}"
 
 
@@ -106,8 +109,13 @@ def _retrieval_query(question: str, history: List[Dict[str, str]]) -> str:
     return question
 
 
-def _semantic_search(query: str, family_entity_id: str, user_roles: List[str], k: int) -> List[Dict[str, Any]]:
-    vector = embeddings.embed_query(query)
+async def _semantic_search(query: str, family_entity_id: str, user_roles: List[str], k: int) -> List[Dict[str, Any]]:
+    embedder = get_embedder()
+    try:
+        embed_res = await embedder.embed([query])
+        vector = embed_res.vectors[0]
+    except Exception:
+        vector = embeddings.embed_query(query)
     return pinecone_service.query_similar_chunks(
         query_vector=vector, top_k=k, family_entity_id=family_entity_id, user_roles=user_roles
     )
@@ -147,9 +155,9 @@ def _fuse(
 
     for entry in pool.values():
         if dates and any(d in entry.get("text", "") for d in dates):
-            entry["fused"] += 0.05  # Calibrated exact date boost (Audit ID: R8)
+            entry["fused"] += 0.05
         if len(entry.get("text", "").strip()) < 40:
-            entry["fused"] *= 0.3  # headings / separators carry no evidence
+            entry["fused"] *= 0.3
 
     ranked = sorted(pool.values(), key=lambda e: e["fused"], reverse=True)
     picked: List[Dict[str, Any]] = []
@@ -160,7 +168,6 @@ def _fuse(
         doc = e.get("document_id", "")
         if per_doc.get(doc, 0) >= 3:
             continue
-        # Content-hash deduplication across formats (Audit ID: R8)
         content_snippet = " ".join(e.get("text", "").split())[:300].lower()
         if content_snippet in seen_hashes:
             continue
@@ -173,11 +180,7 @@ def _fuse(
 
 
 def _focus_text(text: str, dates: List[str], limit: int) -> str:
-    """
-    Trim a passage to the part that matters. Ledger chunks hold ~50 rows; when the question names a
-    date we keep the column header plus a window starting just before that row (so the following
-    trading days are included too).
-    """
+    """Trim a passage to the relevant content."""
     if len(text) <= limit:
         return text
     for d in dates:
@@ -198,43 +201,45 @@ def _pack_evidence(passages: List[Dict[str, Any]], dates: List[str], budget: int
     date_hits = 0
     for p in passages:
         text = p.get("text", "")
-        hit = bool(dates) and any(d in text for d in dates)
-        # the same ledger row exists in five file formats; two copies are enough evidence
-        if hit:
+        has_date = dates and any(d in text for d in dates)
+        if has_date:
             date_hits += 1
-            if date_hits > 2:
-                continue
-        remaining = budget - used
-        if remaining < 300:
+        limit = PASSAGE_CHAR_LIMIT if (has_date or len(passages) <= 3) else 700
+        focused = _focus_text(text, dates, limit)
+        cost = len(focused) + 80
+        if used + cost > budget and packed and (not has_date or date_hits > 3):
+            continue
+        packed.append({**p, "focused_text": focused})
+        used += cost
+        if used >= budget:
             break
-        focused = _focus_text(text, dates, min(PASSAGE_CHAR_LIMIT, remaining))
-        packed.append({**p, "text": focused, "full_text": text})
-        used += len(focused)
     return packed
 
 
 def _citations_for(passages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    names = pinecone_service.get_document_names() if passages else {}
+    names = pinecone_service.get_document_names()
     citations = []
     for i, p in enumerate(passages, start=1):
-        name = p.get("original_name") or names.get(p.get("document_id", "")) or "Indexed financial record"
-        text = p.get("full_text") or p.get("text", "")
+        doc_id = p.get("document_id", "")
+        name = p.get("original_name") or names.get(doc_id) or (f"Document {doc_id[:8]}" if doc_id else "Document")
+        snippet = (p.get("focused_text") or p.get("text") or "").strip().replace("\n", " ")
+        if len(snippet) > 220:
+            snippet = snippet[:220].rstrip() + "..."
         citations.append({
             "ref": i,
-            "chunk_id": p["chunk_id"],
-            "document_id": p.get("document_id", ""),
+            "document_id": doc_id,
             "document_name": name,
             "page_number": p.get("page_number", 1),
+            "is_table": p.get("is_table", False),
             "section_title": p.get("section_title"),
-            "is_table": bool(p.get("is_table", False)),
-            "snippet": text[:900] + ("..." if len(text) > 900 else ""),
-            "score": round(float(p.get("semantic_score", 0.0)), 3),
+            "snippet": snippet,
+            "text": p.get("text", ""),
         })
     return citations
 
 
 # ---------------------------------------------------------------------------
-# Answer post-processing
+# Answer formatting
 # ---------------------------------------------------------------------------
 
 def _strip_md(text: str) -> str:
@@ -295,26 +300,34 @@ def parse_structured_answer(markdown: str) -> Dict[str, Any]:
     }
 
 
+def _clean_history(history: Optional[List[Dict[str, str]]]) -> List[Dict[str, str]]:
+    if not history:
+        return []
+    clean: List[Dict[str, str]] = []
+    for turn in history[-_HISTORY_TURNS:]:
+        role = turn.get("role")
+        content = (turn.get("content") or "").strip()
+        if role in ("user", "assistant") and content:
+            clean.append({"role": role, "content": content[:_HISTORY_CHARS]})
+    return clean
+
+
+def _stage(name: str, title: str, status: str, detail: str = "", duration_ms: int = 0) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "type": "stage",
+        "stage": name,
+        "title": title,
+        "status": status,
+        "detail": detail,
+    }
+    if duration_ms:
+        payload["duration_ms"] = duration_ms
+    return payload
+
+
 # ---------------------------------------------------------------------------
 # Streaming pipeline
 # ---------------------------------------------------------------------------
-
-def _stage(stage_id: str, title: str, status: str, detail: str = "", duration_ms: int = 0) -> Dict[str, Any]:
-    return {
-        "type": "stage", "id": stage_id, "title": title, "status": status,
-        "detail": detail, "duration_ms": duration_ms,
-    }
-
-
-def _clean_history(history: Optional[List[Dict[str, str]]]) -> List[Dict[str, str]]:
-    cleaned = []
-    for h in (history or [])[-_HISTORY_TURNS:]:
-        role = h.get("role")
-        content = (h.get("content") or "").strip()
-        if role in ("user", "assistant") and content:
-            cleaned.append({"role": role, "content": content[:_HISTORY_CHARS]})
-    return cleaned
-
 
 async def stream_rag_events(
     question: str,
@@ -323,6 +336,7 @@ async def stream_rag_events(
     top_k: int = 6,
     history: Optional[List[Dict[str, str]]] = None,
     mode: str = "text",
+    user_id: Optional[str] = None,
 ) -> AsyncIterator[Dict[str, Any]]:
     start = time.perf_counter()
     user_roles = user_roles or ["family_admin", "family_member"]
@@ -355,9 +369,9 @@ async def stream_rag_events(
 
     # 2. Search ----------------------------------------------------------
     t1 = time.perf_counter()
-    yield _stage("search", "Searching your documents", "active", "Pinecone semantic + keyword search")
+    yield _stage("search", "Searching your documents", "active", "Semantic + keyword search")
     candidate_k = max(top_k * 4, 20)
-    semantic_task = asyncio.to_thread(_semantic_search, retrieval_query, family_entity_id, user_roles, candidate_k)
+    semantic_task = _semantic_search(retrieval_query, family_entity_id, user_roles, candidate_k)
     lexical_task = asyncio.to_thread(lexical_index.search, retrieval_query, family_entity_id, user_roles, candidate_k)
     semantic, lexical = await asyncio.gather(semantic_task, lexical_task, return_exceptions=True)
     search_notes = []
@@ -390,16 +404,27 @@ async def stream_rag_events(
     yield {"type": "sources", "citations": citations}
 
     # 4/5. Reason + answer -------------------------------------------------
-    client = get_groq_client()
-    if not client:
-        yield {"type": "error", "message": "GROQ_API_KEY is not configured in .env, so no answer can be generated."}
+    llm = get_llm()
+    if not llm.is_configured():
+        yield {"type": "error", "message": f"LLM provider '{llm.info.name}' is not configured in environment."}
         return
+
+    # Check token budget BEFORE calling LLM
+    try:
+        check_token_budget(family_entity_id=family_entity_id, user_id=user_id)
+    except HTTPException as budget_err:
+        err_msg = budget_err.detail if isinstance(budget_err.detail, str) else budget_err.detail.get("error", "Token budget exceeded")
+        yield {"type": "error", "message": err_msg, "status_code": budget_err.status_code, "detail": budget_err.detail}
+        return
+
+    # Guard context window against token blowout
+    passages, citations, was_truncated = guard_query_context(passages, citations, max_char_budget=EVIDENCE_CHAR_BUDGET)
 
     def build_messages(n_passages: int, n_history: int) -> List[Dict[str, str]]:
         evidence_blocks = []
         for c, p in list(zip(citations, passages))[:n_passages]:
             safe_source = escape_xml_attribute(c.get("document_name", "Document"))
-            safe_content = escape_evidence_text(p.get("text", ""))
+            safe_content = escape_evidence_text(p.get("focused_text") or p.get("text", ""))
             evidence_blocks.append(
                 f'<evidence id="{c["ref"]}" source="{safe_source}" page="{c["page_number"]}">\n'
                 f"{safe_content}\n</evidence>"
@@ -415,76 +440,52 @@ async def stream_rag_events(
         return [{"role": "system", "content": SYSTEM_PROMPT}, *past, {"role": "user", "content": user_turn}]
 
     t3 = time.perf_counter()
-    yield _stage("reason", "Reasoning over evidence", "active", settings.GROQ_MODEL)
+    model_name = llm.info.default_model or "llm"
+    yield _stage("reason", "Reasoning over evidence", "active", model_name)
     reasoning_text = ""
     answer_text = ""
-    reason_done_at: Optional[float] = None
     n_passages, n_history = len(passages), len(history)
+
     try:
-        for attempt in range(3):
-            try:
-                stream = await client.chat.completions.create(
-                    model=settings.GROQ_MODEL,
-                    messages=build_messages(n_passages, n_history),
-                    temperature=0.2,
-                    max_completion_tokens=3072,
-                    reasoning_effort=settings.GROQ_REASONING_EFFORT,
-                    reasoning_format="parsed",
-                    stream=True,
-                )
-                break
-            except Exception as e:
-                err = str(e)
-                if attempt == 2:
-                    raise
-                if "Request too large" in err or "413" in err:
-                    # shrink the prompt rather than failing the question
-                    n_passages = max(1, n_passages // 2)
-                    n_history = n_history // 2
-                    yield _stage("reason", "Reasoning over evidence", "active",
-                                 f"prompt too large for Groq tier; retrying with {n_passages} passages")
-                    continue
-                wait = re.search(r"try again in ([\d.]+)s", err)
-                if ("429" in err or "rate_limit" in err) and wait and float(wait.group(1)) <= 12:
-                    secs = float(wait.group(1)) + 0.3
-                    yield _stage("reason", "Reasoning over evidence", "active",
-                                 f"Groq rate limit - waiting {secs:.1f}s")
-                    await asyncio.sleep(secs)
-                    continue
-                raise
-        async for chunk in stream:
-            if not chunk.choices:
-                continue
-            delta = chunk.choices[0].delta
-            r_piece = getattr(delta, "reasoning", None)
-            if r_piece:
-                reasoning_text += r_piece
-                yield {"type": "reasoning", "delta": r_piece}
-            c_piece = delta.content
-            if c_piece:
-                if reason_done_at is None:
-                    reason_done_at = time.perf_counter()
-                    words = len(reasoning_text.split())
-                    yield finish(_stage(
-                        "reason", "Reasoning over evidence", "done",
-                        f"{words} words of reasoning" if words else "answered directly",
-                        int((reason_done_at - t3) * 1000),
-                    ))
-                    yield _stage("answer", "Writing the answer", "active")
-                answer_text += c_piece
-                yield {"type": "answer", "delta": c_piece}
+        messages = build_messages(n_passages, n_history)
+        resp = await llm.chat(
+            messages=messages,
+            temperature=0.2,
+            max_tokens=3072,
+        )
     except Exception as e:
-        logger.error("Groq streaming failed: %s", e)
+        logger.error("LLM execution error: %s", e)
         yield {"type": "error", "message": _friendly_llm_error(e)}
         return
 
-    if reason_done_at is None:
-        reason_done_at = time.perf_counter()
-        yield finish(_stage("reason", "Reasoning over evidence", "done", "no answer tokens returned",
-                            int((reason_done_at - t3) * 1000)))
-    answer_text = answer_text.strip() or "I wasn't able to generate an answer. Please try rephrasing the question."
-    yield finish(_stage("answer", "Writing the answer", "done", f"{len(answer_text.split())} words",
-                        int((time.perf_counter() - reason_done_at) * 1000)))
+    # Record usage
+    if resp.usage:
+        UsageRecorder.record(
+            provider=resp.provider,
+            model=resp.model,
+            usage=resp.usage,
+            route="/api/query",
+            family_entity_id=family_entity_id,
+            user_id=user_id,
+        )
+
+    raw_text = resp.text or ""
+    if "<think>" in raw_text and "</think>" in raw_text:
+        parts = raw_text.split("</think>", 1)
+        reasoning_text = parts[0].replace("<think>", "").strip()
+        answer_text = parts[1].strip()
+    else:
+        reasoning_text = ""
+        answer_text = raw_text
+
+    if reasoning_text:
+        yield {"type": "reasoning", "delta": reasoning_text}
+    yield finish(_stage("reason", "Reasoning over evidence", "done", resp.model, int((time.perf_counter() - t3) * 1000)))
+
+    t4 = time.perf_counter()
+    yield _stage("answer", "Writing the answer", "active")
+    yield {"type": "answer", "delta": answer_text}
+    yield finish(_stage("answer", "Writing the answer", "done", f"{len(answer_text.split())} words", int((time.perf_counter() - t4) * 1000)))
 
     grounding_eval = verify_grounding(
         answer=answer_text,
@@ -497,6 +498,7 @@ async def stream_rag_events(
     yield {
         "type": "done",
         "answer": answer_text,
+        "mode": mode,
         "reasoning": reasoning_text,
         "structured_data": parse_structured_answer(answer_text) if mode != "voice" else None,
         "thinking_trace": trace,
@@ -523,10 +525,13 @@ async def execute_rag_query(
     top_k: int = 6,
     history: Optional[List[Dict[str, str]]] = None,
     mode: str = "text",
+    user_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Non-streaming wrapper used by /api/query and /api/voice/ask."""
-    async for event in stream_rag_events(question, family_entity_id, user_roles, top_k, history, mode):
+    async for event in stream_rag_events(question, family_entity_id, user_roles, top_k, history, mode, user_id):
         if event["type"] == "error":
+            if event.get("status_code") == 429:
+                raise HTTPException(status_code=429, detail=event.get("detail") or event["message"])
             raise RagError(event["message"])
         if event["type"] == "done":
             return {k: v for k, v in event.items() if k not in ("type", "referenced")}
