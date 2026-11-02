@@ -1,0 +1,9 @@
+Field,Value,Notes
+Lender,National Australia Bank (NAB),Corporate Banking
+Facility_Number,LN-88392-AU,Commercial Facility
+Original_Principal_AUD,5000000.00,Settled 2023-01-15
+Term_Years,10,Maturity Date 2033-01-15
+Interest_Rate_Percent,6.15%,Variable BBSY + 1.85% margin
+Monthly_Repayment_AUD,55910.00,Principal and Interest
+Outstanding_Balance_FY24_AUD,4625400.00,Balance as of 2024-06-30
+Total_Interest_Paid_FY24_AUD,295400.00,Tax-deductible interest expense

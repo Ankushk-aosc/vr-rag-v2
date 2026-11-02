@@ -1,0 +1,262 @@
+[
+  {
+    "fact_id": "bank_opening_balance",
+    "doc": "bank_statement_fy24.csv",
+    "page": 1,
+    "value": "1450200.00",
+    "unit": "$",
+    "currency": "AUD",
+    "period": "2023-07-01",
+    "description": "Opening bank balance on 1 July 2023"
+  },
+  {
+    "fact_id": "bank_closing_balance",
+    "doc": "bank_statement_fy24.csv",
+    "page": 1,
+    "value": "1895350.50",
+    "unit": "$",
+    "currency": "AUD",
+    "period": "2024-06-30",
+    "description": "Closing bank balance on 30 June 2024"
+  },
+  {
+    "fact_id": "bank_interest_earned",
+    "doc": "bank_statement_fy24.csv",
+    "page": 1,
+    "value": "45210.00",
+    "unit": "$",
+    "currency": "AUD",
+    "period": "FY24",
+    "description": "Term deposit annual interest earned"
+  },
+  {
+    "fact_id": "bank_interest_rate",
+    "doc": "bank_statement_fy24.csv",
+    "page": 1,
+    "value": "4.25",
+    "unit": "%",
+    "currency": "AUD",
+    "period": "FY24",
+    "description": "Term deposit annual interest rate"
+  },
+  {
+    "fact_id": "trust_eleanor_entitlement",
+    "doc": "trust_distribution_summary.docx",
+    "page": 1,
+    "value": "450000.00",
+    "unit": "$",
+    "currency": "AUD",
+    "period": "FY24",
+    "description": "Eleanor Vance trust distribution entitlement"
+  },
+  {
+    "fact_id": "trust_julian_entitlement",
+    "doc": "trust_distribution_summary.docx",
+    "page": 1,
+    "value": "350000.00",
+    "unit": "$",
+    "currency": "AUD",
+    "period": "FY24",
+    "description": "Julian Vance trust distribution entitlement"
+  },
+  {
+    "fact_id": "trust_total_income",
+    "doc": "trust_distribution_summary.docx",
+    "page": 1,
+    "value": "900000.00",
+    "unit": "$",
+    "currency": "AUD",
+    "period": "FY24",
+    "description": "Total Net Trust Distributable Income FY24"
+  },
+  {
+    "fact_id": "trust_franking_credits",
+    "doc": "trust_distribution_summary.docx",
+    "page": 1,
+    "value": "128570.00",
+    "unit": "$",
+    "currency": "AUD",
+    "period": "FY24",
+    "description": "Total attached franking credits on trust distributions"
+  },
+  {
+    "fact_id": "trust_private_reserve_admin_only",
+    "doc": "trust_distribution_summary.docx",
+    "page": 1,
+    "value": "2500000.00",
+    "unit": "$",
+    "currency": "AUD",
+    "period": "FY24",
+    "description": "Private Trustee Discretionary Reserve (Admin Only)"
+  },
+  {
+    "fact_id": "portfolio_total_value",
+    "doc": "portfolio_allocations.xlsx",
+    "page": 1,
+    "value": "45000000",
+    "unit": "$",
+    "currency": "AUD",
+    "period": "FY24",
+    "description": "Total investment portfolio valuation"
+  },
+  {
+    "fact_id": "portfolio_asx_equities",
+    "doc": "portfolio_allocations.xlsx",
+    "page": 1,
+    "value": "18500000",
+    "unit": "$",
+    "currency": "AUD",
+    "period": "FY24",
+    "description": "Australian equities asset value"
+  },
+  {
+    "fact_id": "portfolio_top_holding_bhp",
+    "doc": "portfolio_allocations.xlsx",
+    "page": 2,
+    "value": "5200000",
+    "unit": "$",
+    "currency": "AUD",
+    "period": "FY24",
+    "description": "BHP Group portfolio market value"
+  },
+  {
+    "fact_id": "portfolio_bhp_weight",
+    "doc": "portfolio_allocations.xlsx",
+    "page": 2,
+    "value": "11.5",
+    "unit": "%",
+    "currency": "AUD",
+    "period": "FY24",
+    "description": "BHP Group portfolio weight percentage"
+  },
+  {
+    "fact_id": "annual_gross_revenue",
+    "doc": "annual_report_excerpt.pdf",
+    "page": 1,
+    "value": "6850000.00",
+    "unit": "$",
+    "currency": "AUD",
+    "period": "FY24",
+    "description": "Gross operating revenue FY24"
+  },
+  {
+    "fact_id": "annual_revenue_growth",
+    "doc": "annual_report_excerpt.pdf",
+    "page": 1,
+    "value": "15.7",
+    "unit": "%",
+    "currency": "AUD",
+    "period": "FY24",
+    "description": "Revenue growth percentage FY24 over FY23"
+  },
+  {
+    "fact_id": "annual_npat",
+    "doc": "annual_report_excerpt.pdf",
+    "page": 1,
+    "value": "2407500.00",
+    "unit": "$",
+    "currency": "AUD",
+    "period": "FY24",
+    "description": "Net Profit After Tax FY24"
+  },
+  {
+    "fact_id": "annual_superannuation_paid",
+    "doc": "annual_report_excerpt.pdf",
+    "page": 2,
+    "value": "242000.00",
+    "unit": "$",
+    "currency": "AUD",
+    "period": "FY24",
+    "description": "Statutory superannuation guarantee payments FY24"
+  },
+  {
+    "fact_id": "annual_super_rate",
+    "doc": "annual_report_excerpt.pdf",
+    "page": 2,
+    "value": "11.0",
+    "unit": "%",
+    "currency": "AUD",
+    "period": "FY24",
+    "description": "Superannuation guarantee statutory rate FY24"
+  },
+  {
+    "fact_id": "annual_rd_tax_offset",
+    "doc": "annual_report_excerpt.pdf",
+    "page": 2,
+    "value": "175000.00",
+    "unit": "$",
+    "currency": "AUD",
+    "period": "FY24",
+    "description": "R&D tax incentive offset amount claimed"
+  },
+  {
+    "fact_id": "loan_original_principal",
+    "doc": "commercial_loan_schedule.csv",
+    "page": 1,
+    "value": "5000000.00",
+    "unit": "$",
+    "currency": "AUD",
+    "period": "2023-01-15",
+    "description": "Original commercial loan principal"
+  },
+  {
+    "fact_id": "loan_interest_rate",
+    "doc": "commercial_loan_schedule.csv",
+    "page": 1,
+    "value": "6.15",
+    "unit": "%",
+    "currency": "AUD",
+    "period": "FY24",
+    "description": "Variable commercial loan interest rate"
+  },
+  {
+    "fact_id": "loan_monthly_repayment",
+    "doc": "commercial_loan_schedule.csv",
+    "page": 1,
+    "value": "55910.00",
+    "unit": "$",
+    "currency": "AUD",
+    "period": "Monthly",
+    "description": "Monthly loan principal and interest repayment"
+  },
+  {
+    "fact_id": "loan_outstanding_balance",
+    "doc": "commercial_loan_schedule.csv",
+    "page": 1,
+    "value": "4625400.00",
+    "unit": "$",
+    "currency": "AUD",
+    "period": "2024-06-30",
+    "description": "Outstanding commercial loan balance as of 30 June 2024"
+  },
+  {
+    "fact_id": "scanned_collins_st_valuation",
+    "doc": "scanned_property_valuation.pdf",
+    "page": 1,
+    "value": "8750000.00",
+    "unit": "$",
+    "currency": "AUD",
+    "period": "2024-05-15",
+    "description": "120 Collins Street assessed market valuation (Scanned OCR)"
+  },
+  {
+    "fact_id": "scanned_cap_rate",
+    "doc": "scanned_property_valuation.pdf",
+    "page": 1,
+    "value": "5.75",
+    "unit": "%",
+    "currency": "AUD",
+    "period": "2024-05-15",
+    "description": "120 Collins Street valuation capitalisation rate"
+  },
+  {
+    "fact_id": "scanned_net_passing_income",
+    "doc": "scanned_property_valuation.pdf",
+    "page": 1,
+    "value": "503125.00",
+    "unit": "$",
+    "currency": "AUD",
+    "period": "FY24",
+    "description": "120 Collins Street annual net passing income"
+  }
+]

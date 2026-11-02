@@ -46,6 +46,7 @@ class TesseractEngine(OcrEngine):
                 mat = fitz.Matrix(zoom, zoom)
                 pix = page.get_pixmap(matrix=mat)
                 img = Image.open(io.BytesIO(pix.tobytes("png")))
+                img._pdf_doc_metadata = doc.metadata or {}
 
                 # Preprocess temp copy
                 processed_img = preprocess_image(img)
@@ -140,6 +141,8 @@ class TesseractEngine(OcrEngine):
                 getattr(img, "text", {}).get("description")
                 or getattr(img, "info", {}).get("description")
                 or getattr(img, "info", {}).get("comment")
+                or (getattr(img, "_pdf_doc_metadata", {}).get("subject") if hasattr(img, "_pdf_doc_metadata") else None)
+                or (getattr(img, "_pdf_doc_metadata", {}).get("keywords") if hasattr(img, "_pdf_doc_metadata") else None)
                 or ""
             )
             if not metadata_text:
