@@ -31,7 +31,6 @@ class Settings(BaseSettings):
                 )
         return self
 
-
     # Pinecone
     PINECONE_API_KEY: Optional[str] = None
     PINECONE_INDEX_NAME: str = "australian-financial-rag"
@@ -51,7 +50,6 @@ class Settings(BaseSettings):
     GROQ_MODEL: str = "qwen/qwen3.8-27b"
     # "medium" makes the model emit reasoning tokens that stream into the live thinking panel
     GROQ_REASONING_EFFORT: str = "medium"
-    LLM_PROVIDER: str = "groq"
 
     # Local Whisper Speech-to-Text & Voice
     WHISPER_MODEL_SIZE: str = "base.en"
@@ -61,6 +59,24 @@ class Settings(BaseSettings):
     TTS_ENGINE: str = "local"
     TTS_VOICE: str = "en-AU-NatashaNeural"
     GROQ_STT_MODEL: str = "whisper-large-v3-turbo"
+
+    # Phase 4 Multi-Provider Registry Settings
+    LLM_PROVIDER: str = "fake"          # fake | openai_compatible | groq | ...
+    LLM_MODEL: str = "fake-model"
+    LLM_BASE_URL: str = ""              # e.g. https://api.groq.com/openai/v1
+    LLM_API_KEY: str = ""              # secret; from Secrets Manager in prod
+    EMBEDDER_PROVIDER: str = "fake"          # fake | local_st | openai_compatible | ...
+    EMBEDDER_MODEL: str = "fake-embed-8"
+    EMBEDDER_DIM: int = 8
+    EMBEDDER_BASE_URL: str = ""
+    EMBEDDER_API_KEY: str = ""
+    VECTOR_STORE: str = "memory"        # memory | pinecone | (pgvector later)
+    STT_PROVIDER: str = "fake"          # fake | browser (client) | openai_whisper
+    TTS_PROVIDER: str = "fake"          # fake | browser (client) | openai_tts
+    PROVIDERS_STRICT: bool = False           # if True, missing required key = fail startup
+    TOKEN_BUDGET_ENABLED: bool = False       # 4b only
+    TENANT_DAILY_TOKEN_CAP: int = 0          # 4b only
+    USER_DAILY_TOKEN_CAP: int = 0            # 4b only
 
 
 settings = Settings()
