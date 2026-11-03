@@ -95,11 +95,22 @@ def warm_up_stt() -> None:
 
 
 def stt_status() -> dict:
-    groq_ready = bool(settings.GROQ_API_KEY) and time.time() >= _groq_stt_blocked_until
-    return {
-        "groq_whisper": "available" if groq_ready else (_groq_stt_last_error or "not configured"),
-        "local_whisper": "loaded" if _whisper_model is not None else (_whisper_failed or "not loaded yet"),
-    }
+    """Fixed state words only: raw error text stays in the server log (Audit I-23)."""
+    if settings.is_local_mode:
+        groq = "disabled (local privacy mode)"
+    elif not settings.GROQ_API_KEY or settings.GROQ_API_KEY.startswith("your-"):
+        groq = "not configured"
+    elif time.time() < _groq_stt_blocked_until or _groq_stt_last_error:
+        groq = "unavailable"
+    else:
+        groq = "available"
+    if _whisper_model is not None:
+        local = "loaded"
+    elif _whisper_failed:
+        local = "failed"
+    else:
+        local = "not loaded yet"
+    return {"groq_whisper": groq, "local_whisper": local}
 
 
 def is_probable_hallucination(transcript: str) -> bool:
@@ -150,6 +161,8 @@ def detect_audio_suffix(audio_bytes: bytes, fallback_suffix: str = ".wav") -> st
 def transcribe_with_groq(audio_bytes: bytes, suffix: str = ".webm") -> Optional[str]:
     """Transcribe speech using Groq cloud Whisper. Returns None when unavailable (caller falls back)."""
     global _groq_stt_blocked_until, _groq_stt_last_error
+    if settings.is_local_mode:
+        return None  # audio never leaves the deployment in local mode (Audit I-09)
     if not settings.GROQ_API_KEY or settings.GROQ_API_KEY.startswith("your-"):
         return None
     if time.time() < _groq_stt_blocked_until:
@@ -282,7 +295,14 @@ def synthesize_speech_pyttsx3(text: str) -> bytes:
 
 
 async def synthesize_speech(text: str, voice: Optional[str] = None) -> bytes:
-    """Synthesize speech with Australian English neural voice, falling back to local Windows SAPI5."""
+    """Synthesize speech with Australian English neural voice, falling back to local Windows SAPI5.
+    In local privacy mode only the on-device engine is used: edge-tts sends the answer text to Microsoft."""
+    if settings.is_local_mode:
+        try:
+            return await asyncio.to_thread(synthesize_speech_pyttsx3, text)
+        except Exception as e:
+            logger.warning(f"Local pyttsx3 speech synthesis failed: {e}")
+            return b""
     try:
         # edge-tts talks to a Microsoft websocket; never let a stalled connection hang the request
         audio = await asyncio.wait_for(

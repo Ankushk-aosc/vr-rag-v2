@@ -31,6 +31,25 @@ export interface ChatMessage {
   audioBase64?: string | null;
 }
 
+export interface Membership {
+  family_entity_id: string;
+  entity_name?: string;
+  entity_type?: string;
+  role: "family_admin" | "family_member" | "read_only_adviser" | string;
+}
+
+export interface AuthUser {
+  id: string;
+  email: string;
+  full_name: string;
+  memberships: Membership[];
+}
+
+export interface AuthSession {
+  access_token: string;
+  user: AuthUser;
+}
+
 export interface FamilyEntity {
   id: string;
   name: string;

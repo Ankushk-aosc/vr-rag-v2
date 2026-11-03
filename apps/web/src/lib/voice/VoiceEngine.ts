@@ -8,7 +8,12 @@
  * Speech-to-text: the utterance is always recorded. The browser's SpeechRecognition supplies live
  * words (Chrome / Edge / Android); if it returns nothing - it often fails silently when Google's
  * service is blocked or unreachable - the recording is transcribed by Whisper on the API.
- * Text-to-speech: the API's neural en-AU voice, falling back to the browser's speechSynthesis.
+ * Text-to-speech: the API's voice, falling back to the browser's speechSynthesis.
+ *
+ * Privacy (Audit I-26): Chrome's SpeechRecognition streams microphone audio to Google, and some
+ * speechSynthesis voices are cloud voices. Unless the API reports PRIVACY_MODE=cloud, browser
+ * recognition (live words, wake word, standby) is never started and only on-device browser voices
+ * (`localService`) are used, so every utterance goes only to the deployment's own Whisper.
  * Barge-in (optional): talking over the assistant stops it - only while its audio is actually
  * playing, and only when the mic level clearly exceeds the assistant's own echo.
  *
@@ -17,7 +22,7 @@
  */
 import { synthesizeSpeech, transcribeAudio } from "../api";
 import { AdaptiveVad, rmsOf } from "../vad";
-import { liveLevels, voiceStore } from "./voiceStore";
+import { cloudSpeechAllowed, liveLevels, voiceStore } from "./voiceStore";
 import { SentenceChunker, toSpeakable } from "./speechText";
 import { vlog } from "./voiceLog";
 import { matchWakeWord, playWakeChime, stripWakeWord } from "./wakeWord";
@@ -45,6 +50,8 @@ const SETTINGS_KEY = "aether_voice_settings_v1";
 
 function getRecognitionCtor(): SpeechRecognitionCtor | null {
   if (typeof window === "undefined") return null;
+  // Single chokepoint for browser recognition: off unless the backend runs in cloud mode (I-26)
+  if (!cloudSpeechAllowed()) return null;
   const w = window as any;
   return w.SpeechRecognition || w.webkitSpeechRecognition || null;
 }
@@ -215,6 +222,11 @@ export class VoiceEngine {
    */
   async startStandby(): Promise<void> {
     if (this.inConversation) return;
+    // The wake word needs the browser recogniser; without it standby would hold the mic open for nothing
+    if (!cloudSpeechAllowed()) {
+      vlog("standby-skipped", { reason: "privacy-mode", privacyMode: voiceStore.get().privacyMode });
+      return;
+    }
     vlog("standby-start", { sttMode: voiceStore.get().sttMode });
     this.standby = true;
     this.recognitionFailed = false;
@@ -298,7 +310,7 @@ export class VoiceEngine {
     this.stopListening(true);
     this.stopSpeaking("conversation-end");
 
-    if (this.wakeWordEnabled && !forceStop) {
+    if (this.wakeWordEnabled && cloudSpeechAllowed() && !forceStop) {
       this.listenStandby();
       return;
     }
@@ -1066,11 +1078,16 @@ export class VoiceEngine {
     return new Promise((resolve) => {
       const synth = typeof window !== "undefined" ? window.speechSynthesis : null;
       if (!synth || gen !== this.generation) return resolve();
+      // Outside cloud mode only on-device voices may read answers aloud (remote voices send the text away)
+      const voices = synth.getVoices().filter((v) => cloudSpeechAllowed() || v.localService);
+      const voice = voices.find((v) => v.lang === "en-AU") || voices.find((v) => v.lang.startsWith("en")) || null;
+      if (!voice && !cloudSpeechAllowed()) {
+        vlog("tts-browser-skipped", { reason: "no-on-device-voice" });
+        return resolve();
+      }
       const utter = new SpeechSynthesisUtterance(text);
       if (typeof window !== "undefined") (window as any).__aetherUtterance = utter;
-      const voices = synth.getVoices();
-      utter.voice =
-        voices.find((v) => v.lang === "en-AU") || voices.find((v) => v.lang.startsWith("en")) || null;
+      utter.voice = voice;
       utter.rate = 1.03;
       let doneCalled = false;
       const done = () => {

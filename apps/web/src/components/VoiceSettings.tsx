@@ -18,6 +18,8 @@ export function VoiceSettings({ theme, onSetBargeIn, onSetSttMode, onTestSpeaker
   const voice = useVoiceSnapshot();
   const rootRef = useRef<HTMLDivElement | null>(null);
   const isLight = theme === "light";
+  // Browser recognition sends audio to the browser vendor's cloud; only offered in cloud mode (I-26)
+  const browserSttAllowed = voice.privacyMode === "cloud";
 
   useEffect(() => {
     if (!open) return;
@@ -71,18 +73,29 @@ export function VoiceSettings({ theme, onSetBargeIn, onSetSttMode, onTestSpeaker
 
           <div>
             <div className="mb-1">Speech recognition</div>
+            {!browserSttAllowed && (
+              <div className={`mb-1 text-[10.5px] leading-snug ${muted}`}>
+                Private mode: speech is transcribed only by this deployment&apos;s own Whisper. Browser
+                recognition and the &ldquo;Hey Aether&rdquo; wake word are off because browsers such as Chrome
+                send that audio to their own cloud.
+              </div>
+            )}
             {(
               [
                 ["auto", "Browser, with Whisper fallback", "Live words while you talk (Chrome / Edge)."],
                 ["server", "Whisper only", "Use if the browser mishears or shows no words."],
               ] as const
             ).map(([mode, label, hint]) => (
-              <label key={mode} className="flex items-start gap-2 py-0.5 cursor-pointer">
+              <label
+                key={mode}
+                className={`flex items-start gap-2 py-0.5 ${mode === "auto" && !browserSttAllowed ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
+              >
                 <input
                   type="radio"
                   name="stt-mode"
                   className="mt-1 accent-[#7C3AED]"
-                  checked={voice.sttMode === mode}
+                  disabled={mode === "auto" && !browserSttAllowed}
+                  checked={browserSttAllowed ? voice.sttMode === mode : mode === "server"}
                   onChange={() => onSetSttMode(mode)}
                 />
                 <span>

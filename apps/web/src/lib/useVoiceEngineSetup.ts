@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ChatMessage } from "../types";
+import { fetchPrivacyMode } from "./api";
 import { VoiceEngine } from "./voice/VoiceEngine";
 import { useVoiceSnapshot, voiceStore } from "./voice/voiceStore";
 
@@ -40,7 +41,14 @@ export function useVoiceEngineSetup({
     });
     engineRef.current = engine;
 
-    engine.startStandby().catch(() => {});
+    // Wake-word standby uses the browser recogniser, so it starts only once the API confirms
+    // PRIVACY_MODE=cloud. Until then (and if the check fails) browser speech stays off (Audit I-26).
+    const privacyCheck = new AbortController();
+    fetchPrivacyMode(privacyCheck.signal).then((mode) => {
+      if (privacyCheck.signal.aborted) return;
+      voiceStore.set({ privacyMode: mode });
+      if (mode === "cloud") engine.startStandby().catch(() => {});
+    });
 
     const onUserGesture = () => {
       engine.unlockAudio();
@@ -49,6 +57,7 @@ export function useVoiceEngineSetup({
     window.addEventListener("keydown", onUserGesture, { once: true });
 
     return () => {
+      privacyCheck.abort();
       window.removeEventListener("pointerdown", onUserGesture);
       window.removeEventListener("keydown", onUserGesture);
       engine.dispose();

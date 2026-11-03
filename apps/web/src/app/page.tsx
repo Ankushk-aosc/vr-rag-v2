@@ -201,11 +201,11 @@ export default function SovereignPavilionApp() {
       if (speak) engine!.beginResponse();
 
       // Tokens arrive far faster than React should re-render; batch them every ~50ms.
-      const buf = { answer: "", reasoning: "", stages: [] as ThinkingStage[], sources: [] as CitationItem[] };
+      const buf = { answer: "", stages: [] as ThinkingStage[], sources: [] as CitationItem[] };
       let timer: ReturnType<typeof setTimeout> | null = null;
       const flush = () => {
         timer = null;
-        const snapshot = { content: buf.answer, reasoning: buf.reasoning, thinking_trace: [...buf.stages], sources: buf.sources };
+        const snapshot = { content: buf.answer, thinking_trace: [...buf.stages], sources: buf.sources };
         setMessages((prev) => prev.map((m) => (m.id === astId ? { ...m, ...snapshot } : m)));
       };
       const schedule = () => {
@@ -234,9 +234,6 @@ export default function SovereignPavilionApp() {
               }
               case "sources":
                 buf.sources = ev.citations;
-                break;
-              case "reasoning":
-                buf.reasoning += ev.delta;
                 break;
               case "answer":
                 buf.answer += ev.delta;
@@ -268,7 +265,6 @@ export default function SovereignPavilionApp() {
             return {
               ...m,
               content: done.answer,
-              reasoning: done.reasoning,
               structured_data: done.structured_data,
               thinking_trace: done.thinking_trace.map((s, i) => ({ ...s, id: buf.stages[i]?.id })),
               citations: done.citations,
@@ -281,7 +277,6 @@ export default function SovereignPavilionApp() {
           return {
             ...m,
             content: buf.answer || (aborted ? "_Stopped._" : ""),
-            reasoning: buf.reasoning,
             thinking_trace: buf.stages.map((s) => ({ ...s, status: "done" as const })),
             sources: buf.sources,
             streaming: false,

@@ -18,6 +18,12 @@ import {
 import SwarmCursor from "./SwarmCursor";
 import { login, register, UserProfile } from "../lib/auth";
 
+// Next inlines NODE_ENV, so production bundles drop these dev-only demo credentials entirely
+const DEMO_CREDENTIALS =
+  process.env.NODE_ENV !== "production"
+    ? { email: "admin@sovereignfamily.com.au", password: "SovereignAdmin2026!" }
+    : null;
+
 export interface AuthGatewayProps {
   onAuthenticated: (user: UserProfile, mode: "spatial" | "ledger") => void;
 }
@@ -97,8 +103,9 @@ export function AuthGateway({ onAuthenticated }: AuthGatewayProps) {
   };
 
   const handleUseDemo = () => {
-    setEmail("admin@sovereignfamily.com.au");
-    setPassword("SovereignAdmin2026!");
+    if (!DEMO_CREDENTIALS) return;
+    setEmail(DEMO_CREDENTIALS.email);
+    setPassword(DEMO_CREDENTIALS.password);
     setTab("login");
     setErrorMessage(null);
   };
@@ -224,15 +231,17 @@ export function AuthGateway({ onAuthenticated }: AuthGatewayProps) {
                   </span>
                 </h1>
 
-                {/* Quick Auto-fill Demo Button */}
-                <button
-                  type="button"
-                  onClick={handleUseDemo}
-                  title="Auto-fill verified demo administrator credentials"
-                  className="text-[11px] text-[#A78BFA] hover:text-white font-medium bg-[#7C3AED]/15 px-2.5 py-1 rounded-md border border-[#7C3AED]/30 hover:bg-[#7C3AED]/25 transition-all"
-                >
-                  Auto-fill Demo Admin
-                </button>
+                {/* Quick Auto-fill Demo Button (development builds only; the API only seeds it in dev) */}
+                {DEMO_CREDENTIALS && (
+                  <button
+                    type="button"
+                    onClick={handleUseDemo}
+                    title="Auto-fill verified demo administrator credentials"
+                    className="text-[11px] text-[#A78BFA] hover:text-white font-medium bg-[#7C3AED]/15 px-2.5 py-1 rounded-md border border-[#7C3AED]/30 hover:bg-[#7C3AED]/25 transition-all"
+                  >
+                    Auto-fill Demo Admin
+                  </button>
+                )}
               </div>
 
               <p className="text-xs sm:text-sm text-zinc-400">
@@ -342,7 +351,7 @@ export function AuthGateway({ onAuthenticated }: AuthGatewayProps) {
                     required
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
-                    placeholder="admin@sovereignfamily.com.au"
+                    placeholder="you@familyoffice.com.au"
                     className="w-full pl-10 pr-4 py-2.5 bg-transparent border border-white/20 rounded-xl text-sm text-white placeholder-zinc-400 focus:outline-none focus:border-[#7C3AED] focus:ring-1 focus:ring-[#7C3AED] transition-all"
                   />
                 </div>

@@ -4,6 +4,8 @@ from unittest.mock import MagicMock, patch
 from app.main import app
 from app.services import auth
 
+pytestmark = pytest.mark.usefixtures("cloud_mode")  # Pinecone-path tests (Audit I-09: local is the default)
+
 client = TestClient(app)
 
 @pytest.fixture

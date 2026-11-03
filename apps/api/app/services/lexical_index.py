@@ -239,19 +239,30 @@ class LexicalIndex:
     ) -> List[Dict[str, Any]]:
         from app.db.session import get_db_session
         from sqlalchemy import text
+        # Same ACL rule as the BM25 partitions (Audit I-07): admin-only documents need the admin role,
+        # everything else needs admin or member. Fail closed for any other role set.
+        roles = set(user_roles or [])
+        if "family_admin" in roles:
+            acl_clause = ""
+        elif "family_member" in roles:
+            acl_clause = "AND COALESCE(a.allowed_role, 'family_member') <> 'family_admin'"
+        else:
+            return []
         try:
             with get_db_session(family_ids=[family_entity_id]) as session:
                 engine = session.get_bind()
                 if not engine or engine.dialect.name != "postgresql":
                     return []
-                stmt = text("""
+                stmt = text(f"""
                     SELECT c.id as chunk_id, c.document_id, c.page_number, c.is_table,
                            d.family_entity_id, d.original_name, c.content as text,
                            ts_rank(to_tsvector('english', c.content), plainto_tsquery('english', :query)) as rank
                     FROM document_chunks c
                     JOIN documents d ON c.document_id = d.id
+                    LEFT JOIN document_acl a ON a.document_id = d.id AND a.family_entity_id = d.family_entity_id
                     WHERE d.family_entity_id = :family_id
                       AND to_tsvector('english', c.content) @@ plainto_tsquery('english', :query)
+                      {acl_clause}
                     ORDER BY rank DESC
                     LIMIT :top_k
                 """)

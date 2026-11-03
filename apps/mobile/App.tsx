@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from "react";
-import { StyleSheet, View, SafeAreaView } from "react-native";
+import React, { useState, useEffect, useCallback } from "react";
+import { StyleSheet, View } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { THEME, ThemeMode } from "./src/constants/theme";
 import { Header } from "./src/components/Header";
@@ -8,12 +8,22 @@ import { ChatHUD } from "./src/components/ChatHUD";
 import { AetherVoiceBar } from "./src/components/AetherVoiceBar";
 import { CitationBottomSheet } from "./src/components/CitationBottomSheet";
 import { DocumentVaultModal } from "./src/components/DocumentVaultModal";
-import { ChatMessage, CitationItem, DocumentRecord } from "./src/types";
-import { fetchDocuments, queryAssistant, voiceAskAssistant } from "./src/services/api";
+import { LoginScreen } from "./src/components/LoginScreen";
+import { AuthSession, ChatMessage, CitationItem, DocumentRecord } from "./src/types";
+import {
+  fetchDocuments,
+  logoutUser,
+  queryAssistant,
+  setUnauthorizedHandler,
+  voiceAskAssistant,
+} from "./src/services/api";
 
 export default function App() {
   const [theme, setTheme] = useState<ThemeMode>("light");
-  const [selectedEntity, setSelectedEntity] = useState("default_family");
+  // Signed-in session (Audit I-12). Entities come from the user's memberships, never a hard-coded id.
+  const [session, setSession] = useState<AuthSession | null>(null);
+  const [signInNotice, setSignInNotice] = useState<string | null>(null);
+  const [selectedEntity, setSelectedEntity] = useState("");
   const [activeView, setActiveView] = useState<"spatial" | "chat">("spatial");
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -25,7 +35,40 @@ export default function App() {
 
   const colors = THEME[theme];
 
+  const resetWorkspace = useCallback(() => {
+    setMessages([]);
+    setDocuments([]);
+    setSelectedCitation(null);
+    setIsVaultOpen(false);
+    setIsProcessing(false);
+    setSelectedEntity("");
+  }, []);
+
+  // Any 401 (expired or revoked token) returns to the sign-in screen with nothing left on screen
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      setSession(null);
+      resetWorkspace();
+      setSignInNotice("Your session has ended. Please sign in again.");
+    });
+    return () => setUnauthorizedHandler(null);
+  }, [resetWorkspace]);
+
+  const handleSignedIn = (next: AuthSession) => {
+    setSignInNotice(null);
+    setSession(next);
+    setSelectedEntity(next.user.memberships[0].family_entity_id);
+  };
+
+  const handleLogout = async () => {
+    await logoutUser();
+    setSession(null);
+    resetWorkspace();
+    setSignInNotice(null);
+  };
+
   const loadDocs = async () => {
+    if (!selectedEntity) return;
     try {
       const docs = await fetchDocuments(selectedEntity);
       setDocuments(docs);
@@ -35,8 +78,8 @@ export default function App() {
   };
 
   useEffect(() => {
-    loadDocs();
-  }, [selectedEntity]);
+    if (session) loadDocs();
+  }, [selectedEntity, session]);
 
   const handleSendMessage = async (text: string) => {
     const userMsg: ChatMessage = {
@@ -122,6 +165,15 @@ export default function App() {
     setActiveView((prev) => (prev === "spatial" ? "chat" : "spatial"));
   };
 
+  if (!session) {
+    return (
+      <View style={[styles.root, { backgroundColor: colors.background }]}>
+        <StatusBar style={theme === "dark" ? "light" : "dark"} />
+        <LoginScreen theme={theme} onSignedIn={handleSignedIn} notice={signInNotice} />
+      </View>
+    );
+  }
+
   return (
     <View style={[styles.root, { backgroundColor: colors.background }]}>
       <StatusBar style={theme === "dark" ? "light" : "dark"} />
@@ -129,7 +181,15 @@ export default function App() {
       {/* Floating Apple Navigation Header */}
       <Header
         selectedEntity={selectedEntity}
-        onSelectEntity={setSelectedEntity}
+        onSelectEntity={(id) => {
+          if (id === selectedEntity) return;
+          // Never show one vault's answers or citations under another vault
+          setMessages([]);
+          setSelectedCitation(null);
+          setSelectedEntity(id);
+        }}
+        memberships={session.user.memberships}
+        onLogout={handleLogout}
         theme={theme}
         onToggleTheme={toggleTheme}
         onOpenVault={() => setIsVaultOpen(true)}

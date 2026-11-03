@@ -3,8 +3,10 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload
 
+from app.config import settings
 from app.db.models import (
     AuditEventModel,
     DocumentAclModel,
@@ -19,6 +21,7 @@ from app.db.repositories.base import (
     BaseAuditRepository,
     BaseDocumentRepository,
     BaseFamilyRepository,
+    DuplicateDocumentError,
     BaseTokenRepository,
     BaseUserRepository,
 )
@@ -37,6 +40,7 @@ def _user_to_dict(user: UserModel) -> Dict[str, Any]:
         "email": user.email,
         "hashed_password": user.hashed_password,
         "full_name": user.full_name,
+        "token_version": user.token_version or 0,
         "created_at": _dt_to_str(user.created_at),
     }
 
@@ -99,10 +103,16 @@ class SqlAlchemyUserRepository(BaseUserRepository):
             user = session.get(UserModel, user_id)
             return _user_to_dict(user) if user else None
 
-    def update_user_password(self, user_id: str, hashed_password: str) -> None:
+    def update_user_password(self, user_id: str, hashed_password: str) -> int:
         with get_db_session() as session:
-            stmt = update(UserModel).where(UserModel.id == user_id).values(hashed_password=hashed_password)
-            session.execute(stmt)
+            stmt = (
+                update(UserModel)
+                .where(UserModel.id == user_id)
+                .values(hashed_password=hashed_password, token_version=UserModel.token_version + 1)
+                .returning(UserModel.token_version)
+            )
+            version = session.execute(stmt).scalar_one_or_none()
+            return int(version or 0)
 
     def delete_user_account(self, user_id: str) -> bool:
         with get_db_session() as session:
@@ -113,8 +123,8 @@ class SqlAlchemyUserRepository(BaseUserRepository):
             return False
 
     def seed_default_demo_admin(self) -> None:
-        demo_email = "admin@sovereignfamily.com.au"
-        demo_password = "SovereignAdmin2026!"
+        demo_email = settings.DEMO_ADMIN_EMAIL
+        demo_password = settings.DEMO_ADMIN_PASSWORD
         demo_entity_id = "default_family"
         user_id = "usr_demo_admin"
 
@@ -229,6 +239,15 @@ class SqlAlchemyDocumentRepository(BaseDocumentRepository):
             return _doc_to_dict(doc) if doc else None
 
     def insert_document(self, doc: Dict[str, Any]) -> None:
+        try:
+            self._insert_document(doc)
+        except IntegrityError as e:
+            # The constraint name comes from migration 001; the column name covers create_all schemas
+            if "uq_family_file_hash" in str(e.orig) or "file_hash" in str(e.orig):
+                raise DuplicateDocumentError(doc["file_hash"]) from e
+            raise
+
+    def _insert_document(self, doc: Dict[str, Any]) -> None:
         family_id = doc["family_entity_id"]
         with get_db_session(family_ids=[family_id]) as session:
             db_doc = DocumentModel(
@@ -245,12 +264,12 @@ class SqlAlchemyDocumentRepository(BaseDocumentRepository):
             session.add(db_doc)
 
     def update_document_status(self, document_id: str, status: str) -> None:
-        with get_db_session() as session:
+        with get_db_session(system=True) as session:  # id lookup, authorized by the caller (Audit I-16)
             stmt = update(DocumentModel).where(DocumentModel.id == document_id).values(status=status)
             session.execute(stmt)
 
     def delete_document(self, document_id: str) -> bool:
-        with get_db_session() as session:
+        with get_db_session(system=True) as session:  # id lookup, authorized by the caller (Audit I-16)
             doc = session.get(DocumentModel, document_id)
             if doc:
                 session.delete(doc)
@@ -278,7 +297,7 @@ class SqlAlchemyDocumentRepository(BaseDocumentRepository):
     def insert_chunks(self, chunks: List[Dict[str, Any]]) -> None:
         if not chunks:
             return
-        with get_db_session() as session:
+        with get_db_session(system=True) as session:  # id lookup, authorized by the caller (Audit I-16)
             for c in chunks:
                 chunk_obj = DocumentChunkModel(
                     id=c["id"],
@@ -291,10 +310,22 @@ class SqlAlchemyDocumentRepository(BaseDocumentRepository):
                 )
                 session.merge(chunk_obj)
 
+    def get_chunk_ids_for_document(self, document_id: str, family_entity_id: str) -> List[str]:
+        with get_db_session(family_ids=[family_entity_id]) as session:
+            stmt = (
+                select(DocumentChunkModel.id)
+                .join(DocumentModel, DocumentChunkModel.document_id == DocumentModel.id)
+                .where(
+                    DocumentChunkModel.document_id == document_id,
+                    DocumentModel.family_entity_id == family_entity_id,
+                )
+            )
+            return list(session.scalars(stmt).all())
+
     def get_chunks_by_ids(self, chunk_ids: List[str]) -> List[Dict[str, Any]]:
         if not chunk_ids:
             return []
-        with get_db_session() as session:
+        with get_db_session(system=True) as session:  # id lookup, authorized by the caller (Audit I-16)
             stmt = (
                 select(DocumentChunkModel, DocumentModel.original_name, DocumentModel.family_entity_id)
                 .join(DocumentModel, DocumentChunkModel.document_id == DocumentModel.id)
@@ -337,13 +368,13 @@ class SqlAlchemyDocumentRepository(BaseDocumentRepository):
             return [_doc_to_dict(d) for d in docs]
 
     def get_all_documents(self) -> List[Dict[str, Any]]:
-        with get_db_session() as session:
+        with get_db_session(system=True) as session:  # cross-tenant maintenance only: reconcile, backfill, startup checks (Audit I-16)
             stmt = select(DocumentModel).order_by(DocumentModel.uploaded_at.desc())
             docs = session.scalars(stmt).all()
             return [_doc_to_dict(d) for d in docs]
 
     def get_document_by_id(self, doc_id: str) -> Optional[Dict[str, Any]]:
-        with get_db_session() as session:
+        with get_db_session(system=True) as session:  # id lookup, authorized by the caller (Audit I-16)
             doc = session.get(DocumentModel, doc_id)
             return _doc_to_dict(doc) if doc else None
 
@@ -395,7 +426,7 @@ class SqlAlchemyAuditRepository(BaseAuditRepository):
             return [_audit_to_dict(e) for e in events]
 
     def get_audit_events_for_user(self, user_id: str, limit: int = 50) -> List[Dict[str, Any]]:
-        with get_db_session() as session:
+        with get_db_session(system=True) as session:  # filtered to this user's own events (Audit I-16)
             stmt = (
                 select(AuditEventModel)
                 .where(AuditEventModel.user_id == user_id)

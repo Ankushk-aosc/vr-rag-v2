@@ -7,7 +7,7 @@ Formats metrics into:
 """
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 def format_cli_table(results_summary: Dict[str, Any]) -> str:

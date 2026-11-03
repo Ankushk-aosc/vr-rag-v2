@@ -98,6 +98,7 @@ def test_account_deletion_erases_user():
     assert sqlite.get_user_by_id(user_id) is None
 
 
+@pytest.mark.usefixtures("cloud_mode")
 def test_document_deletion_cascades_across_stores():
     user_id = str(uuid.uuid4())
     entity_id = "fam_test_del_doc"
@@ -139,7 +140,7 @@ def test_document_deletion_cascades_across_stores():
         assert res.status_code == 200
         assert "successfully deleted" in res.json()["message"]
 
-        mock_pine_del.assert_called_once_with(doc_id, entity_id)
+        mock_pine_del.assert_called_once_with(doc_id, entity_id, chunk_ids=[f"{doc_id}_c0"])
         mock_lex_del.assert_called_once_with(doc_id)
 
     # SQLite rows must be deleted
@@ -194,6 +195,7 @@ def test_document_deletion_denied_for_non_admin_and_wrong_tenant():
     assert "Access denied" in res_b.json()["detail"]
 
 
+@pytest.mark.usefixtures("cloud_mode")
 @patch("app.routers.documents.extractor.extract_document")
 @patch("app.routers.documents.chunker.chunk_document")
 @patch("app.routers.documents.embeddings.embed_texts")

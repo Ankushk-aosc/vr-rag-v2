@@ -1,6 +1,8 @@
 import re
+import threading
 import uuid
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, Security, status
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field, field_validator
@@ -29,7 +31,10 @@ class RegisterRequest(BaseModel):
     password: str = Field(..., min_length=8, description="Minimum 8 characters")
     full_name: str = Field(..., min_length=2)
     family_entity_name: Optional[str] = Field(None, description="Family office or trust name")
-    invite_entity_id: Optional[str] = Field(None, description="Optional entity ID to join an existing family")
+    invite_token: Optional[str] = Field(None, description="Invite issued by a family_admin via POST /api/auth/invites")
+    invite_entity_id: Optional[str] = Field(
+        None, description="Deprecated: only accepted alongside a matching invite_token"
+    )
 
     @field_validator("email")
     @classmethod
@@ -58,6 +63,19 @@ class PasswordResetRequest(BaseModel):
     new_password: str = Field(..., min_length=8, description="Minimum 8 characters")
 
 
+class InviteRequest(BaseModel):
+    family_entity_id: str = Field(..., description="Family entity the invitee will join")
+    role: Literal["family_member", "read_only_adviser"] = "family_member"
+    expires_in_hours: int = Field(72, ge=1, le=auth.INVITE_MAX_HOURS)
+
+
+class InviteResponse(BaseModel):
+    invite_token: str
+    family_entity_id: str
+    role: str
+    expires_at: str
+
+
 class AuthResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
@@ -73,11 +91,82 @@ class MembershipResponse(BaseModel):
 
 from app.db import sqlite
 
+# Serialises check-then-claim of single-use invites within this process
+_invite_claim_lock = threading.Lock()
+
+
+def _validate_invite(invite_token: Optional[str], invite_entity_id: Optional[str]) -> Dict[str, Any]:
+    if not invite_token:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Joining an existing family requires an invite issued by a family_admin."
+        )
+    payload = auth.decode_invite_token(invite_token)
+    entity_id = payload["fam"]
+    if invite_entity_id and invite_entity_id != entity_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invite does not match the requested family.")
+    if sqlite.is_token_revoked(payload["jti"]):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Family invite has already been used or revoked.")
+    if not sqlite.get_family_entity(entity_id):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid family invite.")
+    # The inviter must still administer the family at redemption time
+    inviter_memberships = sqlite.get_user_memberships(payload.get("inv") or "")
+    if not any(m["family_entity_id"] == entity_id and m.get("role") == "family_admin" for m in inviter_memberships):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Family invite is no longer valid.")
+    return payload
+
+
+def _claim_invite(invite: Dict[str, Any], user_id: str) -> None:
+    """Marks the invite as used before the account is created so it cannot be redeemed twice."""
+    expires_at = datetime.fromtimestamp(invite["exp"], tz=timezone.utc).isoformat()
+    with _invite_claim_lock:
+        if sqlite.is_token_revoked(invite["jti"]):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Family invite has already been used or revoked.")
+        sqlite.revoke_token(invite["jti"], user_id, expires_at)
+
+
+@router.post(
+    "/invites",
+    response_model=InviteResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(rate_limit(max_requests=20, window_seconds=60))]
+)
+async def create_invite(
+    req: InviteRequest,
+    current_user: Dict[str, Any] = Depends(auth.get_current_user)
+):
+    """Family admins issue single-use, expiring invites for new members or read-only advisers."""
+    memberships = current_user.get("memberships") or []
+    target = next((m for m in memberships if m["family_entity_id"] == req.family_entity_id), None)
+    if not target:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Access denied: You do not hold active membership in family entity '{req.family_entity_id}'."
+        )
+    if target.get("role") != "family_admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied: Only family_admin can issue invites.")
+
+    issued = auth.create_invite_token(req.family_entity_id, req.role, current_user["id"], req.expires_in_hours)
+    sqlite.log_audit_event(
+        action="INVITE_CREATED",
+        user_id=current_user["id"],
+        family_entity_id=req.family_entity_id,
+        resource_id=issued["jti"],
+        details=f"Invite issued for role '{req.role}', expires {issued['expires_at']}."
+    )
+    return InviteResponse(
+        invite_token=issued["token"],
+        family_entity_id=req.family_entity_id,
+        role=req.role,
+        expires_at=issued["expires_at"],
+    )
+
+
 @router.post(
     "/register",
     response_model=AuthResponse,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(rate_limit(max_requests=20, window_seconds=60))]
+    dependencies=[Depends(rate_limit(max_requests=20, window_seconds=60, per="ip"))]
 )
 async def register(req: RegisterRequest):
     existing = sqlite.get_user_by_email(req.email)
@@ -87,8 +176,15 @@ async def register(req: RegisterRequest):
             detail="An account with this email address already exists."
         )
 
+    # Joining an existing family requires a valid invite; never trust a bare entity ID (Audit I-01).
+    # Validate before creating the user so a rejected invite leaves no orphan account behind.
+    invite = _validate_invite(req.invite_token, req.invite_entity_id) if (req.invite_token or req.invite_entity_id) else None
+
     user_id = str(uuid.uuid4())
     hashed_pwd = auth.hash_password(req.password)
+
+    if invite:
+        _claim_invite(invite, user_id)
 
     user_record = {
         "id": user_id,
@@ -99,15 +195,9 @@ async def register(req: RegisterRequest):
     sqlite.create_user(user_record)
 
     # Determine tenant entity and role
-    if req.invite_entity_id:
-        existing_entity = sqlite.get_family_entity(req.invite_entity_id)
-        if not existing_entity:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Target family entity '{req.invite_entity_id}' does not exist."
-            )
-        entity_id = req.invite_entity_id
-        assigned_role = "family_member"
+    if invite:
+        entity_id = invite["fam"]
+        assigned_role = invite["role"]
     else:
         # Create dedicated, isolated family entity for new registrant
         entity_id = f"fam_{uuid.uuid4().hex[:12]}"
@@ -136,10 +226,13 @@ async def register(req: RegisterRequest):
         user_id=user_id,
         family_entity_id=entity_id,
         resource_id=entity_id,
-        details=f"User registered with family role '{assigned_role}'."
+        details=(
+            f"User registered with family role '{assigned_role}'"
+            + (f" via invite from user {invite['inv']}." if invite else ".")
+        )
     )
 
-    token = auth.create_access_token({"sub": user_id, "email": req.email})
+    token = auth.issue_access_token({"id": user_id, "email": req.email, "token_version": 0})
     safe_user = {
         "id": user_id,
         "email": req.email,
@@ -153,7 +246,7 @@ async def register(req: RegisterRequest):
 @router.post(
     "/login",
     response_model=AuthResponse,
-    dependencies=[Depends(rate_limit(max_requests=20, window_seconds=60))]
+    dependencies=[Depends(rate_limit(max_requests=20, window_seconds=60, per="ip"))]
 )
 async def login(req: LoginRequest):
     user = sqlite.get_user_by_email(req.email)
@@ -202,7 +295,7 @@ async def login(req: LoginRequest):
         details="User successfully authenticated."
     )
 
-    token = auth.create_access_token({"sub": user_id, "email": user["email"]})
+    token = auth.issue_access_token(user)
     safe_user = {
         "id": user_id,
         "email": user["email"],
@@ -303,14 +396,21 @@ async def reset_password(
         )
 
     new_hashed = auth.hash_password(req.new_password)
-    sqlite.update_user_password(user_id, new_hashed)
+    # Bumping the session version signs out every other device, and this one's old token (Audit I-15)
+    new_version = sqlite.update_user_password(user_id, new_hashed)
     sqlite.log_audit_event(
         action="PASSWORD_RESET",
         user_id=user_id,
         family_entity_id=primary_entity,
-        details="User reset their password."
+        details="User reset their password; all other sessions were signed out."
     )
-    return {"message": "Password updated successfully."}
+    # Keep the device that made the change signed in with a token for the new version
+    token = auth.issue_access_token({**db_user, "token_version": new_version})
+    return {
+        "message": "Password updated successfully. You have been signed out on all other devices.",
+        "access_token": token,
+        "token_type": "bearer",
+    }
 
 
 @router.delete("/account")

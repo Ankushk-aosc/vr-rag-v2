@@ -96,7 +96,8 @@ class UsageRecorder:
         if not user_id:
             return 0
         today_start = _start_of_today_utc()
-        with get_db_session() as session:
+        # Spans tenants by design (per-user cap); without the system context RLS would return 0 (Audit I-16)
+        with get_db_session(system=True) as session:
             stmt = select(func.coalesce(func.sum(LLMUsageModel.total_tokens), 0)).where(
                 LLMUsageModel.user_id == user_id,
                 LLMUsageModel.created_at >= today_start,

@@ -28,6 +28,10 @@ class StorageService:
         self.local_dir.mkdir(parents=True, exist_ok=True)
         self._s3_client = None
 
+    def _use_s3(self) -> bool:
+        # Originals stay on local disk in local privacy mode (Audit I-09)
+        return bool(self.bucket_name) and not settings.is_local_mode
+
     def _get_s3_client(self):
         if self._s3_client is None:
             import boto3
@@ -41,7 +45,7 @@ class StorageService:
         """
         key = f"{document_id}/{filename}"
 
-        if self.bucket_name:
+        if self._use_s3():
             try:
                 client = self._get_s3_client()
                 client.upload_file(str(file_path), self.bucket_name, key)
@@ -59,23 +63,34 @@ class StorageService:
         logger.info("Persisted original document locally at %s", target_file)
         return str(target_file)
 
-    def delete_stored(self, document_id: str, filename: str) -> None:
-        """Removes persisted original upon ingestion rollback / compensation."""
+    def delete_stored(self, document_id: str, filename: str) -> bool:
+        """
+        Removes the persisted original (ingestion rollback and right-to-erasure deletes).
+        Returns True when no copy remains (including when none existed), False on any failure.
+        """
+        ok = True
         key = f"{document_id}/{filename}"
-        if self.bucket_name:
+        if self._use_s3():
             try:
                 client = self._get_s3_client()
                 client.delete_object(Bucket=self.bucket_name, Key=key)
                 logger.info("Deleted %s from S3 bucket %s", key, self.bucket_name)
             except Exception as e:
-                logger.debug("Failed deleting S3 object %s: %s", key, e)
+                logger.warning("Failed deleting S3 object %s: %s", key, e)
+                ok = False
 
-        target_file = self.local_dir / document_id / filename
-        if target_file.exists():
-            target_file.unlink()
+        # Uploads may have fallen back to local storage even with a bucket configured
         target_dir = self.local_dir / document_id
-        if target_dir.exists() and not any(target_dir.iterdir()):
-            target_dir.rmdir()
+        target_file = target_dir / filename
+        try:
+            if target_file.exists():
+                target_file.unlink()
+            if target_dir.exists() and not any(target_dir.iterdir()):
+                target_dir.rmdir()
+        except OSError as e:
+            logger.warning("Failed deleting local original %s: %s", target_file, e)
+            ok = False
+        return ok
 
 
 storage_service = StorageService()

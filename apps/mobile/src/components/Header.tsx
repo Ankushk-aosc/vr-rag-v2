@@ -1,11 +1,25 @@
 import React from "react";
 import { View, Text, TouchableOpacity, StyleSheet, Modal } from "react-native";
-import { Layers, Sun, Moon, HardDrive, Box, Glasses, ShieldCheck } from "lucide-react-native";
+import { Layers, Sun, Moon, HardDrive, Box, Glasses, ShieldCheck, LogOut } from "lucide-react-native";
 import { THEME, ThemeMode } from "../constants/theme";
+import { Membership } from "../types";
+
+const ROLE_LABELS: Record<string, string> = {
+  family_admin: "Admin",
+  family_member: "Member",
+  read_only_adviser: "Adviser (read-only)",
+};
+
+export function entityLabel(m: Membership): string {
+  return m.entity_name || m.family_entity_id;
+}
 
 interface HeaderProps {
   selectedEntity: string;
   onSelectEntity: (entity: string) => void;
+  /** The signed-in user's family entities (from the login response). */
+  memberships: Membership[];
+  onLogout: () => void;
   theme: ThemeMode;
   onToggleTheme: () => void;
   onOpenVault: () => void;
@@ -16,6 +30,8 @@ interface HeaderProps {
 export function Header({
   selectedEntity,
   onSelectEntity,
+  memberships,
+  onLogout,
   theme,
   onToggleTheme,
   onOpenVault,
@@ -26,10 +42,11 @@ export function Header({
   const isLight = theme === "light";
   const [isEntityModalOpen, setIsEntityModalOpen] = React.useState(false);
 
-  const entities = [
-    { id: "default_family", label: "Smith Family Trust (ABN 48 123)" },
-    { id: "personal_portfolio", label: "Personal Superannuation (AUD)" },
-  ];
+  const entities = memberships.map((m) => ({
+    id: m.family_entity_id,
+    label: `${entityLabel(m)} · ${ROLE_LABELS[m.role] || m.role}`,
+  }));
+  const current = memberships.find((m) => m.family_entity_id === selectedEntity);
 
   return (
     <View style={styles.container}>
@@ -53,7 +70,7 @@ export function Header({
             <Text style={[styles.monogramText, { color: colors.gold }]}>AE</Text>
           </View>
           <Text style={[styles.entityLabel, { color: colors.text }]} numberOfLines={1}>
-            {selectedEntity === "default_family" ? "Smith Trust" : "Personal Super"}
+            {current ? entityLabel(current) : "Select vault"}
           </Text>
         </TouchableOpacity>
 
@@ -96,6 +113,16 @@ export function Header({
             ) : (
               <Sun size={15} color={colors.gold} />
             )}
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            onPress={onLogout}
+            style={[styles.iconButton, { borderColor: colors.border }]}
+            activeOpacity={0.8}
+            accessibilityRole="button"
+            accessibilityLabel="Sign out"
+          >
+            <LogOut size={15} color={colors.text} />
           </TouchableOpacity>
         </View>
       </View>

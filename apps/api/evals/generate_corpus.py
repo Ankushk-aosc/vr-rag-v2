@@ -3,6 +3,7 @@ import io
 import json
 from pathlib import Path
 from decimal import Decimal
+from typing import Any, Dict
 from PIL import Image, ImageDraw
 import pymupdf as fitz
 import docx

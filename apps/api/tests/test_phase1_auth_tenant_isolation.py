@@ -150,6 +150,7 @@ def test_readonly_adviser_upload_denied():
         assert "Read-only advisers are not permitted to upload documents." in res.json()["detail"]
 
 
+@pytest.mark.usefixtures("cloud_mode")
 def test_cross_tenant_document_view_denied():
     user_a_token = auth.create_access_token({"sub": "user_a", "email": "a@example.com"})
     mock_user_a = {

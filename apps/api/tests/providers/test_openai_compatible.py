@@ -125,6 +125,7 @@ async def test_swapping_llm_provider_fake_to_openai_compatible(monkeypatch):
 
     transport = httpx.MockTransport(mock_handler)
     settings_compat = Settings(
+        PRIVACY_MODE="cloud",  # a hosted endpoint is a cloud-mode opt-in (Audit I-09)
         LLM_PROVIDER="openai_compatible",
         LLM_BASE_URL="https://api.openai.com/v1",
         LLM_API_KEY="sk-test-key",

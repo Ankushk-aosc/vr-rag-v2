@@ -115,16 +115,17 @@ export async function queryAssistant(
   return await res.json();
 }
 
-/** Events emitted by POST /api/query/stream (Server-Sent Events, one JSON object per `data:` line). */
+/**
+ * Events emitted by POST /api/query/stream (Server-Sent Events, one JSON object per `data:` line).
+ * The model's private reasoning is never streamed (Audit I-10); progress is shown through `stage` events.
+ */
 export type StreamEvent =
   | { type: "stage"; id: string; title: string; status: "active" | "done"; detail: string; duration_ms: number }
   | { type: "sources"; citations: CitationItem[] }
-  | { type: "reasoning"; delta: string }
   | { type: "answer"; delta: string }
   | {
       type: "done";
       answer: string;
-      reasoning: string;
       structured_data: StructuredData | null;
       thinking_trace: ThinkingStage[];
       citations: CitationItem[];
@@ -134,7 +135,7 @@ export type StreamEvent =
   | { type: "error"; message: string };
 
 /**
- * Stream a RAG answer: pipeline stages, live model reasoning and answer tokens arrive as they are produced.
+ * Stream a RAG answer: pipeline stages, sources and answer tokens arrive as they are produced.
  * Resolves when the stream ends; abort with the signal to stop generation.
  */
 export async function streamQuery(
@@ -185,7 +186,24 @@ export async function streamQuery(
   }
 }
 
-/** Server-side speech-to-text (Groq Whisper, falling back to local faster-whisper). */
+export type PrivacyMode = "local" | "cloud" | "unknown";
+
+/**
+ * The backend's privacy mode from /api/health (Audit I-09/I-26). Anything but an explicit "cloud"
+ * answer, including an unreachable API, is reported as "local" or "unknown" so callers fail closed.
+ */
+export async function fetchPrivacyMode(signal?: AbortSignal): Promise<PrivacyMode> {
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/health`, { signal });
+    if (!res.ok) return "unknown";
+    const data = await res.json();
+    return data.privacy_mode === "cloud" ? "cloud" : data.privacy_mode === "local" ? "local" : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+/** Server-side speech-to-text (local faster-whisper; Groq Whisper first in cloud mode). */
 export async function transcribeAudio(audioBlob: Blob, signal?: AbortSignal): Promise<string> {
   const formData = new FormData();
   const ext = audioBlob.type.includes("mp4") ? "m4a" : audioBlob.type.includes("ogg") ? "ogg" : "webm";
@@ -204,7 +222,7 @@ export async function transcribeAudio(audioBlob: Blob, signal?: AbortSignal): Pr
   return (data.transcript || "").trim();
 }
 
-/** Server-side neural text-to-speech (edge-tts en-AU). Returns playable audio. */
+/** Server-side text-to-speech (on-device engine; edge-tts en-AU in cloud mode). Returns playable audio. */
 export async function synthesizeSpeech(text: string, signal?: AbortSignal, voice?: string): Promise<Blob> {
   const res = await fetch(`${API_BASE_URL}/api/voice/synthesize`, {
     method: "POST",

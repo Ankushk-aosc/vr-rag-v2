@@ -1,4 +1,6 @@
-version: "3.8"
+# Local stack: PostgreSQL + API + web (Audit I-17).
+# Copy .env.example to .env and fill in the required values, then: docker compose up --build
+# With PRIVACY_MODE=local (default) the API talks to an LLM server on the host, e.g. Ollama on port 11434.
 
 services:
   postgres:
@@ -6,18 +8,22 @@ services:
     container_name: vr_rag_postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: sovereign
-      POSTGRES_PASSWORD: sovereign_secret
-      POSTGRES_DB: vr_rag
+      # Administrative superuser: used only by docker/postgres/init-app-role.sh, never by the API
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?set POSTGRES_ADMIN_PASSWORD in .env}
+      APP_DB_USER: ${APP_DB_USER:-vrrag_app}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?set APP_DB_PASSWORD in .env}
+      APP_DB_NAME: ${APP_DB_NAME:-vr_rag}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./docker/postgres/init-app-role.sh:/docker-entrypoint-initdb.d/10-init-app-role.sh:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U sovereign -d vr_rag"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ${APP_DB_NAME:-vr_rag}"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
 
   api:
     build:
@@ -26,13 +32,25 @@ services:
     container_name: vr_rag_api
     restart: unless-stopped
     environment:
-      ENVIRONMENT: development
-      DATABASE_URL: postgresql://sovereign:sovereign_secret@postgres:5432/vr_rag
-      PINECONE_API_KEY: ""
-      GROQ_API_KEY: ""
-      JWT_SECRET: dev_jwt_secret_sovereign_2026_matrix_secure
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      APP_SECRET_KEY: ${APP_SECRET_KEY:?set APP_SECRET_KEY in .env}
+      # Non-superuser role, so PostgreSQL row-level security applies; migrations run at startup
+      DATABASE_URL: postgresql+psycopg://${APP_DB_USER:-vrrag_app}:${APP_DB_PASSWORD}@postgres:5432/${APP_DB_NAME:-vr_rag}
+      PRIVACY_MODE: ${PRIVACY_MODE:-local}
+      LLM_PROVIDER: ${LLM_PROVIDER:-local}
+      # 127.0.0.1 inside a container is the container itself, so this has its own variable
+      LOCAL_LLM_BASE_URL: ${DOCKER_LOCAL_LLM_BASE_URL:-http://host.docker.internal:11434/v1}
+      LOCAL_LLM_MODEL: ${LOCAL_LLM_MODEL:-qwen3:8b}
+      # Only read when PRIVACY_MODE=cloud
+      PINECONE_API_KEY: ${PINECONE_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8000:8000"
+    volumes:
+      - api_data:/data
+      - api_models:/models
     depends_on:
       postgres:
         condition: service_healthy
@@ -41,14 +59,18 @@ services:
     build:
       context: ./apps/web
       dockerfile: Dockerfile
+      args:
+        # Compiled into the browser bundle: the address the browser uses to reach the API
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
     container_name: vr_rag_web
     restart: unless-stopped
-    environment:
-      NEXT_PUBLIC_API_URL: http://localhost:8000
     ports:
       - "3000:3000"
     depends_on:
-      - api
+      api:
+        condition: service_healthy
 
 volumes:
   pgdata:
+  api_data:
+  api_models:

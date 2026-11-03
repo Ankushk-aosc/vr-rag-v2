@@ -195,6 +195,7 @@ def test_duplicate_upload_non_destructive():
 
 
 # 5. Deleting a document removes metadata from SQLite, vectors from Pinecone, and entries from BM25
+@pytest.mark.usefixtures("cloud_mode")
 def test_document_deletion_cascade():
     """Verify sovereign deletion cascades across SQLite, Pinecone, and BM25 index."""
     user_a = _register_user("Alice Admin", "Alpha Family Office")
@@ -246,7 +247,7 @@ def test_document_deletion_cascade():
         assert sqlite.get_document_by_id(doc_id) is None
 
         # 2. Cascade called to Pinecone
-        mock_del_pinecone.assert_called_once_with(doc_id, fam_a_id)
+        mock_del_pinecone.assert_called_once_with(doc_id, fam_a_id, chunk_ids=[])
 
         # 3. Chunks removed from BM25 index
         bm25_matches = lexical_index.search("distribution", fam_a_id, user_roles=["family_admin"], top_k=5)

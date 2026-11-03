@@ -8,6 +8,7 @@ from app.config import settings
 from app.db.repositories.base import (
     BaseAuditRepository,
     BaseDocumentRepository,
+    DuplicateDocumentError,
     BaseFamilyRepository,
     BaseTokenRepository,
     BaseUserRepository,
@@ -51,14 +52,16 @@ class SqliteUserRepository(BaseUserRepository):
             row = cursor.fetchone()
             return dict(row) if row else None
 
-    def update_user_password(self, user_id: str, hashed_password: str) -> None:
+    def update_user_password(self, user_id: str, hashed_password: str) -> int:
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "UPDATE users SET hashed_password = ? WHERE id = ?",
+                "UPDATE users SET hashed_password = ?, token_version = token_version + 1 WHERE id = ?",
                 (hashed_password, user_id),
             )
+            row = cursor.execute("SELECT token_version FROM users WHERE id = ?", (user_id,)).fetchone()
             conn.commit()
+            return int(row["token_version"]) if row else 0
 
     def delete_user_account(self, user_id: str) -> bool:
         with get_db_connection() as conn:
@@ -69,8 +72,8 @@ class SqliteUserRepository(BaseUserRepository):
             return deleted
 
     def seed_default_demo_admin(self) -> None:
-        demo_email = "admin@sovereignfamily.com.au"
-        demo_password = "SovereignAdmin2026!"
+        demo_email = settings.DEMO_ADMIN_EMAIL
+        demo_password = settings.DEMO_ADMIN_PASSWORD
         demo_entity_id = "default_family"
         user_id = "usr_demo_admin"
 
@@ -176,6 +179,14 @@ class SqliteDocumentRepository(BaseDocumentRepository):
             return dict(row) if row else None
 
     def insert_document(self, doc: Dict[str, Any]) -> None:
+        try:
+            self._insert_document(doc)
+        except sqlite3.IntegrityError as e:
+            if "file_hash" in str(e):
+                raise DuplicateDocumentError(doc["file_hash"]) from e
+            raise
+
+    def _insert_document(self, doc: Dict[str, Any]) -> None:
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -280,6 +291,19 @@ class SqliteDocumentRepository(BaseDocumentRepository):
             rows = cursor.fetchall()
             results_map = {row["id"]: dict(row) for row in rows}
             return [results_map[cid] for cid in chunk_ids if cid in results_map]
+
+    def get_chunk_ids_for_document(self, document_id: str, family_entity_id: str) -> List[str]:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT c.id FROM document_chunks c
+                JOIN documents d ON c.document_id = d.id
+                WHERE c.document_id = ? AND d.family_entity_id = ?
+            """,
+                (document_id, family_entity_id),
+            )
+            return [row["id"] for row in cursor.fetchall()]
 
     def get_documents_by_entity(self, entity_id: str, user_role: str) -> List[Dict[str, Any]]:
         with get_db_connection() as conn:

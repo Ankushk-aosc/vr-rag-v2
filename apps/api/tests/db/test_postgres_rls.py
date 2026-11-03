@@ -121,6 +121,8 @@ def test_postgres_rls_raw_sql_policies_when_pg_available():
             END $$;
         """))
 
+        # Seeding two tenants at once needs the explicit system context (Audit I-16)
+        session.execute(text("SELECT set_config('app.rls_bypass', 'on', true)"))
         # Seed data directly
         doc_a_id = str(uuid.uuid4())
         doc_b_id = str(uuid.uuid4())
@@ -142,7 +144,7 @@ def test_postgres_rls_raw_sql_policies_when_pg_available():
 
     # Now open a connection with SET LOCAL app.current_family_ids = family_a
     with Session(engine) as session:
-        session.execute(text("SET LOCAL app.current_family_ids = :val"), {"val": family_a})
+        session.execute(text("SELECT set_config('app.current_family_ids', :val, true)"), {"val": family_a})
 
         # Deliberately BUGGY query without WHERE clause:
         # SELECT * FROM documents;

@@ -153,6 +153,7 @@ export async function logout(): Promise<void> {
 }
 
 export async function resetPassword(currentPassword: string, newPassword: string): Promise<{ message: string }> {
+  // A password change invalidates every existing token, this one included; the response carries a fresh one (I-15)
   const res = await fetch(`${API_BASE_URL}/api/auth/password-reset`, {
     method: "POST",
     headers: getAuthHeaders({ "Content-Type": "application/json" }),
@@ -162,7 +163,9 @@ export async function resetPassword(currentPassword: string, newPassword: string
     const errorBody = await res.json().catch(() => ({}));
     throw new Error(errorBody.detail || `Password reset failed with status ${res.status}`);
   }
-  return await res.json();
+  const data = await res.json();
+  if (data.access_token) setAuthToken(data.access_token);
+  return { message: data.message };
 }
 
 export async function deleteAccount(): Promise<{ message: string }> {

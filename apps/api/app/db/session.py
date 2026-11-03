@@ -69,15 +69,33 @@ def set_tenant_context(session: Session, family_ids: List[str]) -> None:
     engine = session.get_bind()
     if engine and engine.dialect.name == "postgresql":
         joined = ",".join(clean_ids)
+        # SET cannot take bind parameters in PostgreSQL; set_config(..., is_local => true) is the
+        # parameter-safe equivalent of SET LOCAL (Audit I-16: the old form raised a syntax error)
         session.execute(
-            text("SET LOCAL app.current_family_ids = :val"),
+            text("SELECT set_config('app.current_family_ids', :val, true)"),
             {"val": joined}
         )
 
 
+def set_system_context(session: Session) -> None:
+    """
+    Marks a transaction as a system lookup that RLS lets through (migration 005, Audit I-16).
+    Only for queries by a globally unique id (document, chunk, user) whose result the caller then
+    authorizes in application code, exactly as in SQLite mode. Everything else must use family_ids.
+    """
+    session.info["rls_bypass"] = True
+    engine = session.get_bind()
+    if engine and engine.dialect.name == "postgresql":
+        session.execute(text("SET LOCAL app.rls_bypass = 'on'"))
+
+
 @contextmanager
-def get_db_session(family_ids: Optional[List[str]] = None) -> Generator[Session, None, None]:
-    """Guaranteed auto-closing database session to ensure zero connection leaks."""
+def get_db_session(family_ids: Optional[List[str]] = None, system: bool = False) -> Generator[Session, None, None]:
+    """Guaranteed auto-closing database session to ensure zero connection leaks.
+
+    family_ids scopes the transaction to those tenants under Postgres RLS. system=True is the explicit,
+    narrow escape hatch for id lookups (see set_system_context); never combine it with user input
+    that selects across tenants."""
     global _sessionmaker
     if _sessionmaker is None:
         get_engine()
@@ -86,6 +104,8 @@ def get_db_session(family_ids: Optional[List[str]] = None) -> Generator[Session,
     try:
         if family_ids:
             set_tenant_context(session, family_ids)
+        if system:
+            set_system_context(session)
         yield session
         session.commit()
     except Exception:

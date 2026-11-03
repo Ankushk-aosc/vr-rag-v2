@@ -6,6 +6,32 @@ from app.services.lexical_index import lexical_index
 logger = logging.getLogger(__name__)
 
 
+def _page_table_text(chunk_id: str) -> str:
+    """
+    Text of one table chunk: Pinecone metadata first, then the SQL system of record, which stores
+    the same chunk ids and content (Audit I-05). Callers must have authorized the document already.
+    """
+    try:
+        index = pinecone_service.get_index()
+        fetch_res = index.fetch(ids=[chunk_id]) if index else None
+        chunk = (getattr(fetch_res, "vectors", {}) or {}).get(chunk_id)
+        if chunk and getattr(chunk, "metadata", None):
+            text = chunk.metadata.get("text", "")
+            if text:
+                return text
+    except Exception as e:
+        logger.debug(f"Pinecone table chunk unavailable for {chunk_id}: {e}")
+
+    try:
+        from app.db import sqlite
+        sql_chunks = sqlite.get_chunks_by_ids([chunk_id])
+        if sql_chunks:
+            return sql_chunks[0].get("content") or ""
+    except Exception as e:
+        logger.warning(f"SQL table chunk lookup failed for {chunk_id}: {e}")
+    return ""
+
+
 def read_document_table_data(
     doc: Dict[str, Any],
     document_id: str,
@@ -54,17 +80,9 @@ def read_document_table_data(
     target_chunk_id = f"{document_id}_p{page}_t0"
 
     try:
-        index = pinecone_service.get_index()
-    except Exception:
-        index = None
+        text = _page_table_text(target_chunk_id)
 
-    try:
-        fetch_res = index.fetch(ids=[target_chunk_id]) if index else None
-        vectors = getattr(fetch_res, "vectors", {}) or {}
-        chunk = vectors.get(target_chunk_id)
-
-        if chunk and getattr(chunk, "metadata", None):
-            text = chunk.metadata.get("text", "")
+        if text:
             lines = [l.strip() for l in text.splitlines() if l.strip()]
             for i in range(len(lines) - 1):
                 if "|" in lines[i] and "---" in lines[i + 1]:
@@ -89,7 +107,7 @@ def read_document_table_data(
             rows = doc.get("sample_rows") or []
             total_rows = len(rows)
     except Exception as e:
-        logger.error(f"Error fetching table page chunk from Pinecone: {e}")
+        logger.error(f"Error parsing table page chunk: {e}")
         rows = doc.get("sample_rows") or []
         total_rows = len(rows)
 

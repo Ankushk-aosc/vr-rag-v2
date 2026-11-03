@@ -32,6 +32,8 @@ def setup_test_db():
 
 import uuid
 
+pytestmark = pytest.mark.usefixtures("cloud_mode")  # Pinecone-path tests (Audit I-09: local is the default)
+
 def _get_auth_context(client: TestClient, email_prefix: str = "ocr_user", role: str = "family_admin"):
     """Helper to register and login a test user with a unique email and family entity."""
     clean_prefix = email_prefix.split("@")[0]

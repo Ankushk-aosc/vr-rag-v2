@@ -3,6 +3,7 @@ from app.db.repositories.base import (
     BaseAuditRepository,
     BaseDocumentRepository,
     BaseFamilyRepository,
+    BaseLocalIndexRepository,
     BaseTokenRepository,
     BaseUserRepository,
 )
@@ -20,6 +21,8 @@ from app.db.repositories.sqlalchemy_repo import (
     SqlAlchemyTokenRepository,
     SqlAlchemyUserRepository,
 )
+from app.db.repositories.sqlite_local_index import SqliteLocalIndexRepository
+from app.db.repositories.sqlalchemy_local_index import SqlAlchemyLocalIndexRepository
 
 
 def is_postgres() -> bool:
@@ -31,12 +34,14 @@ _sqlite_family_repo = SqliteFamilyRepository()
 _sqlite_doc_repo = SqliteDocumentRepository()
 _sqlite_audit_repo = SqliteAuditRepository()
 _sqlite_token_repo = SqliteTokenRepository()
+_sqlite_local_index_repo = SqliteLocalIndexRepository()
 
 _sa_user_repo = SqlAlchemyUserRepository()
 _sa_family_repo = SqlAlchemyFamilyRepository()
 _sa_doc_repo = SqlAlchemyDocumentRepository()
 _sa_audit_repo = SqlAlchemyAuditRepository()
 _sa_token_repo = SqlAlchemyTokenRepository()
+_sa_local_index_repo = SqlAlchemyLocalIndexRepository()
 
 
 def get_user_repository() -> BaseUserRepository:
@@ -59,6 +64,10 @@ def get_token_repository() -> BaseTokenRepository:
     return _sa_token_repo if is_postgres() else _sqlite_token_repo
 
 
+def get_local_index_repository() -> BaseLocalIndexRepository:
+    return _sa_local_index_repo if is_postgres() else _sqlite_local_index_repo
+
+
 __all__ = [
     "is_postgres",
     "get_user_repository",
@@ -66,9 +75,11 @@ __all__ = [
     "get_document_repository",
     "get_audit_repository",
     "get_token_repository",
+    "get_local_index_repository",
     "BaseUserRepository",
     "BaseFamilyRepository",
     "BaseDocumentRepository",
     "BaseAuditRepository",
     "BaseTokenRepository",
+    "BaseLocalIndexRepository",
 ]

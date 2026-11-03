@@ -10,7 +10,7 @@ import sys
 from typing import Any, Dict, List
 
 from app.db import sqlite
-from app.services import pinecone_service
+from app.services import pinecone_service, vector_index
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ def reconcile_storage(dry_run: bool = False) -> Dict[str, Any]:
         if doc.get("status") == "pending":
             doc_id = doc["id"]
             family_id = doc.get("family_entity_id", "default_family")
-            pinecone_doc = pinecone_service.get_document_from_pinecone(doc_id)
+            pinecone_doc = vector_index.get_document(doc_id)
             if pinecone_doc and pinecone_doc.get("status") == "indexed":
                 logger.info(f"Reconciling pending doc {doc_id} -> indexed")
                 if not dry_run:
@@ -39,7 +39,7 @@ def reconcile_storage(dry_run: bool = False) -> Dict[str, Any]:
                 logger.info(f"Reconciling stuck pending doc {doc_id} -> failed")
                 if not dry_run:
                     try:
-                        pinecone_service.delete_document_from_pinecone(doc_id, family_entity_id=family_id)
+                        vector_index.delete_document(doc_id, family_id)
                     except Exception as e:
                         logger.debug(f"Pinecone delete failed during reconcile: {e}")
                     sqlite.update_document_status(doc_id, "failed")

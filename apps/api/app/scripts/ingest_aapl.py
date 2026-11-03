@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from app.config import settings
 from app.db import sqlite
-from app.services import chunker, embeddings, extractor, pinecone_service
+from app.services import chunker, embeddings, extractor, pinecone_service, vector_index
 
 MIME_MAP = {
     ".pdf": "application/pdf",
@@ -33,9 +33,11 @@ def ingest_folder(folder_path: Path, family_entity_id: str = "default_family", a
     # Initialize SQLite database schema
     sqlite.init_db()
 
-    # Verify Pinecone Index
-    index = pinecone_service.get_index()
-    print(f"Connected to Pinecone Index: {settings.PINECONE_INDEX_NAME}")
+    if vector_index.is_local():
+        print("PRIVACY_MODE=local: vectors are stored in the local database")
+    else:
+        pinecone_service.get_index()
+        print(f"Connected to Pinecone Index: {settings.PINECONE_INDEX_NAME}")
 
     files = [f for f in sorted(folder_path.iterdir()) if f.is_file() and f.suffix.lower() in MIME_MAP]
     if not files:
@@ -92,17 +94,6 @@ def ingest_folder(folder_path: Path, family_entity_id: str = "default_family", a
         print(f"  -> Generating {len(chunk_texts)} dense embeddings via {settings.EMBEDDING_MODEL}...")
         chunk_embeddings = embeddings.embed_texts(chunk_texts)
 
-        # 4. Upsert vectors to Pinecone
-        roles = ["family_admin", "family_member"] if allowed_role == "family_member" else ["family_admin"]
-        print(f"  -> Upserting {len(chunk_embeddings)} vectors to Pinecone...")
-        upserted_count = pinecone_service.upsert_vectors(
-            chunks=chunks,
-            embeddings=chunk_embeddings,
-            family_entity_id=family_entity_id,
-            allowed_roles=roles
-        )
-        print(f"  -> Successfully indexed {upserted_count} vectors in Pinecone")
-
         # 5. Save to SQLite
         doc_record = {
             "id": doc_id,
@@ -118,6 +109,16 @@ def ingest_folder(folder_path: Path, family_entity_id: str = "default_family", a
         sqlite.insert_document(doc_record)
         sqlite.insert_document_acl(document_id=doc_id, family_entity_id=family_entity_id, allowed_role=allowed_role)
         sqlite.insert_chunks(chunks)
+
+        # 6. Store vectors (after the SQL rows they reference exist)
+        roles = ["family_admin", "family_member"] if allowed_role == "family_member" else ["family_admin"]
+        upserted_count = vector_index.upsert_vectors(
+            chunks=chunks,
+            embeddings=chunk_embeddings,
+            family_entity_id=family_entity_id,
+            allowed_roles=roles
+        )
+        print(f"  -> Indexed {upserted_count} vectors ({'local database' if vector_index.is_local() else 'Pinecone'})")
 
         sqlite.log_audit_event(
             action="DOCUMENT_UPLOAD",

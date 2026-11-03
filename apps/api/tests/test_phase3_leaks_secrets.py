@@ -114,12 +114,18 @@ def test_s5_audit_trail_tenant_isolation_and_rbac(client):
     token_a = res_a.json()["access_token"]
     entity_a = res_a.json()["user"]["memberships"][0]["family_entity_id"]
 
-    # Register Member in Family Alpha via invite
+    # Register Member in Family Alpha via an admin-issued invite
+    invite = client.post(
+        "/api/auth/invites",
+        json={"family_entity_id": entity_a, "role": "family_member"},
+        headers={"Authorization": f"Bearer {token_a}"},
+    )
+    assert invite.status_code == 201
     res_member = client.post("/api/auth/register", json={
         "email": "member_a@alpha.com",
         "password": "MemberPassword123!",
         "full_name": "Member Alpha",
-        "invite_entity_id": entity_a
+        "invite_token": invite.json()["invite_token"]
     })
     token_member = res_member.json()["access_token"]
 

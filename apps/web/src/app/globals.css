@@ -1,12 +1,11 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
-
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
-  --font-inter: 'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif;
-  --font-mono: 'JetBrains Mono', 'SF Mono', monospace;
+  /* Font files are self-hosted by next/font (layout.tsx); no runtime request to Google (Audit I-26) */
+  --font-inter: var(--font-inter-self), 'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif;
+  --font-mono: var(--font-mono-self), 'JetBrains Mono', 'SF Mono', monospace;
   --bg-primary: #000000;
   --text-primary: #F5F5F7;
   --glass-bg: rgba(20, 20, 26, 0.75);

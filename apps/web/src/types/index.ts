@@ -73,7 +73,7 @@ export interface ChatMessage {
   structured_data?: StructuredData | null;
   thinking_trace?: ThinkingStage[];
   total_latency_ms?: number;
-  /** Raw model reasoning tokens (shown in the collapsible "Thought for…" block). */
+  /** Model reasoning. The API never sends it (Audit I-10), so this stays empty; kept for older saved messages. */
   reasoning?: string;
   /** True while tokens are still arriving for this message. */
   streaming?: boolean;

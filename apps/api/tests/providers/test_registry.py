@@ -21,6 +21,7 @@ def test_registry_unknown_provider_raises():
 
 def test_registry_strict_mode_missing_key_raises():
     settings = Settings(
+        PRIVACY_MODE="cloud",  # a hosted endpoint is a cloud-mode opt-in (Audit I-09)
         LLM_PROVIDER="openai_compatible",
         LLM_BASE_URL="https://api.openai.com/v1",
         LLM_API_KEY="",  # missing key

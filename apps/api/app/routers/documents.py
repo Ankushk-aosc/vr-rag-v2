@@ -4,15 +4,17 @@ import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 
 from app.schemas.document import BatchDocumentUploadResponse, DocumentResponse, DocumentTableResponse, DocumentUploadResponse
-from app.services import auth, chunker, embeddings, extractor, pinecone_service
+from app.services import auth, chunker, embeddings, extractor, pinecone_service, vector_index
 from app.services.storage import storage_service
 from app.services.lexical_index import lexical_index
+from app.services.safe_errors import log_with_reference, safe_message
 from app.services.table_reader import read_document_table_data
 from app.db import sqlite
+from app.db.repositories.base import DuplicateDocumentError
 
 router = APIRouter(prefix="/api/documents", tags=["Documents"])
 
@@ -43,6 +45,10 @@ from app.services.upload_security import (
 logger = logging.getLogger(__name__)
 
 MAX_FILE_SIZE = settings.MAX_FILE_SIZE_MB * 1024 * 1024
+
+# Document ACL values an uploader may choose (Audit I-07): family-wide, or restricted to admins.
+# Advisers read family-wide documents via the member tag, so they are not a separate ACL value.
+UploadAclRole = Literal["family_member", "family_admin"]
 
 
 async def _process_single_upload(
@@ -108,13 +114,14 @@ async def _process_single_upload(
 
         file_hash = hasher.hexdigest()
 
-        # Check for duplicate document in this entity (Finding F1 fix)
+        # Early duplicate check (Finding F1) saves the parsing work; the UNIQUE constraint at insert time
+        # is what actually decides, so two concurrent uploads cannot both get through (Audit I-24).
         existing_doc = sqlite.get_document_by_hash(family_entity_id, file_hash)
-        if existing_doc:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"A document with identical content '{existing_doc.get('original_name')}' already exists in this family vault."
-            )
+        if existing_doc and existing_doc.get("status") == "failed":
+            # A failed ingestion is hidden from the vault; let the user upload the file again
+            sqlite.delete_document(existing_doc["id"])
+        elif existing_doc:
+            raise _duplicate_conflict(existing_doc)
 
         # Persist original document to S3 or sovereign local storage
         try:
@@ -128,15 +135,15 @@ async def _process_single_upload(
         except HTTPException:
             storage_service.delete_stored(doc_id, stored_filename)
             raise
-        except ValueError as ve:
+        except extractor.ExtractionRejected as ve:
             storage_service.delete_stored(doc_id, stored_filename)
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(ve))
         except Exception as e:
             storage_service.delete_stored(doc_id, stored_filename)
-            logger.error("Document extraction error: %s", e)
+            ref = log_with_reference("Document extraction failed", e)
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail=f"Failed to extract document contents: {str(e)[:120]}"
+                detail=safe_message("Could not read this document. It may be damaged or in an unsupported layout.", ref),
             )
     finally:
         try:
@@ -151,6 +158,7 @@ async def _process_single_upload(
     # 4. Chunk document preserving page provenance
     chunks = chunker.chunk_document(document_id=doc_id, pages=pages)
     if not chunks:
+        storage_service.delete_stored(doc_id, stored_filename)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Document '{safe_filename}' contains no extractable text."
@@ -224,7 +232,12 @@ async def _process_single_upload(
         "low_confidence": is_low_conf,
         "ocr_confidence": avg_conf
     }
-    sqlite.insert_document(doc_record)
+    try:
+        sqlite.insert_document(doc_record)
+    except DuplicateDocumentError:
+        # Lost the race against a concurrent upload of the same file: report it and leave nothing behind
+        storage_service.delete_stored(doc_id, stored_filename)
+        raise _duplicate_conflict(sqlite.get_document_by_hash(family_entity_id, file_hash))
     sqlite.insert_document_acl(document_id=doc_id, family_entity_id=family_entity_id, allowed_role=allowed_role)
     sqlite.insert_chunks([
         {
@@ -245,7 +258,7 @@ async def _process_single_upload(
     try:
         chunk_texts = [c["content"] for c in chunks]
         chunk_embeddings = embeddings.embed_texts(chunk_texts)
-        total_vectors = pinecone_service.upsert_vectors(
+        total_vectors = vector_index.upsert_vectors(
             chunks=chunks,
             embeddings=chunk_embeddings,
             family_entity_id=family_entity_id,
@@ -258,7 +271,7 @@ async def _process_single_upload(
     except Exception as e:
         logger.error("Vector ingestion failed for document %s: %s", doc_id, e)
         try:
-            pinecone_service.delete_document_from_pinecone(doc_id, family_entity_id=family_entity_id)
+            vector_index.delete_document(doc_id, family_entity_id)
         except Exception:
             pass
         try:
@@ -271,7 +284,7 @@ async def _process_single_upload(
             detail="Vector database upsert failed. Please try again."
         )
 
-    pinecone_service.save_document_to_pinecone(doc_record)
+    vector_index.save_document(doc_record)
     pinecone_service.get_document_names(family_entity_id=family_entity_id, force=True)
 
     # Log document upload audit event
@@ -306,6 +319,14 @@ async def _process_single_upload(
     )
 
 
+def _duplicate_conflict(existing: Optional[Dict[str, Any]]) -> HTTPException:
+    name = (existing or {}).get("original_name") or "this file"
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=f"A document with identical content '{name}' already exists in this family vault.",
+    )
+
+
 def _validate_uploader(family_entity_id: str, current_user: Dict[str, Any]) -> str:
     user_memberships = current_user.get("memberships") or []
     if not user_memberships:
@@ -327,11 +348,100 @@ def _validate_uploader(family_entity_id: str, current_user: Dict[str, Any]) -> s
     return target_membership.get("role", "family_member")
 
 
+def _membership_role(family_entity_id: str, current_user: Dict[str, Any]) -> str:
+    """Returns the caller's role in the entity, or raises 403 if they are not a member."""
+    membership = next(
+        (m for m in (current_user.get("memberships") or []) if m["family_entity_id"] == family_entity_id),
+        None,
+    )
+    if not membership:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Access denied: You do not hold active membership in family entity '{family_entity_id}'."
+        )
+    return membership.get("role", "family_member")
+
+
+def _role_can_view(acl_roles: List[str], role: str) -> bool:
+    """Same rule as the SQL listing query: admins see everything, others need a matching or member-wide ACL."""
+    if role == "family_admin":
+        return True
+    return any(r in (role, "family_member") for r in acl_roles)
+
+
+def _list_entity_documents(family_entity_id: str, role: str) -> List[Dict[str, Any]]:
+    """
+    Documents for one entity, ACL-filtered for the caller's role against SQL (Audit I-05).
+    Pinecone registry records (richer display metadata) come first; every SQL-visible document the
+    registry did not return is appended, so Pinecone being off, empty, capped or missing unindexed
+    uploads never hides documents (Audit I-04, I-08).
+    """
+    # Failed ingestions keep their SQL row for reconciliation but are not usable documents
+    sql_docs = [
+        d for d in sqlite.get_documents_by_entity(family_entity_id, role)
+        if d.get("status") != "failed"
+    ]
+
+    try:
+        cloud_docs = vector_index.list_documents(family_entity_id)
+    except Exception as e:
+        logger.debug(f"Pinecone document listing unavailable: {e}")
+        cloud_docs = []
+
+    if cloud_docs and role != "family_admin":
+        # Registry records carry no ACL; non-admins only see documents the SQL ACL grants them
+        visible_ids = {d["id"] for d in sql_docs}
+        cloud_docs = [d for d in cloud_docs if d.get("id") in visible_ids]
+
+    cloud_ids = {d.get("id") for d in cloud_docs}
+    return cloud_docs + [d for d in sql_docs if d["id"] not in cloud_ids]
+
+
+def _load_authorized_document(document_id: str, current_user: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Loads one document for reading after tenant and ACL checks (Audit I-05).
+    The SQL system of record decides tenancy and access; the Pinecone registry only contributes
+    display metadata (columns, sample rows, preview). Works with Pinecone unconfigured.
+    """
+    sql_doc = sqlite.get_document_by_id(document_id)
+    cloud_doc = vector_index.get_document(document_id)
+    if not sql_doc and not cloud_doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+    if sql_doc and sql_doc.get("status") == "failed":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+
+    doc_entity = (sql_doc or cloud_doc).get("family_entity_id")
+    membership = next(
+        (m for m in (current_user.get("memberships") or []) if m["family_entity_id"] == doc_entity),
+        None,
+    )
+    if not membership:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: You are not authorized to view this document."
+        )
+
+    role = membership.get("role", "family_member")
+    if sql_doc:
+        allowed = _role_can_view(sqlite.get_document_allowed_roles(document_id, doc_entity), role)
+    else:
+        # Legacy registry-only record with no ACL row: fail closed to admins
+        allowed = role == "family_admin"
+    if not allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Permission denied: Your role is not permitted to view this document."
+        )
+
+    # SQL fields win on overlap so tenancy/status always reflect the system of record
+    return {**(cloud_doc or {}), **(sql_doc or {})}
+
+
 @router.post("/upload", response_model=DocumentUploadResponse, status_code=status.HTTP_201_CREATED)
 async def upload_document(
     file: UploadFile = File(...),
     family_entity_id: str = Form("default_family"),
-    allowed_role: str = Form("family_member"),
+    allowed_role: UploadAclRole = Form("family_member"),
     current_user: Dict[str, Any] = Depends(auth.get_current_user)
 ):
     _validate_uploader(family_entity_id, current_user)
@@ -347,7 +457,7 @@ async def upload_document(
 async def upload_documents_batch(
     files: List[UploadFile] = File(...),
     family_entity_id: str = Form("default_family"),
-    allowed_role: str = Form("family_member"),
+    allowed_role: UploadAclRole = Form("family_member"),
     current_user: Dict[str, Any] = Depends(auth.get_current_user)
 ):
     """
@@ -366,9 +476,11 @@ async def upload_documents_batch(
                 user_id=current_user.get("id")
             )
             successful_docs.append(res.document)
+        except HTTPException as he:
+            errors.append(f"{f.filename}: {he.detail}")
         except Exception as e:
-            err_msg = getattr(e, "detail", str(e))
-            errors.append(f"{f.filename}: {err_msg}")
+            ref = log_with_reference(f"Batch upload of {f.filename!r} failed", e)
+            errors.append(f"{f.filename}: {safe_message('Upload failed', ref)}")
 
     return BatchDocumentUploadResponse(
         message=f"Processed {len(successful_docs)} of {len(files)} file(s) into Pinecone.",
@@ -392,22 +504,8 @@ async def list_documents(
         return []
 
     target_entity = family_entity_id or user_memberships[0]["family_entity_id"]
-    if not any(m["family_entity_id"] == target_entity for m in user_memberships):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Access denied: You do not hold active membership in family entity '{target_entity}'."
-        )
-
-    try:
-        cloud_docs = pinecone_service.list_documents_from_pinecone(family_entity_id=target_entity)
-        if cloud_docs:
-            return [DocumentResponse(**d) for d in cloud_docs]
-    except Exception as e:
-        logger.debug(f"Pinecone document listing unavailable: {e}")
-
-    # Enterprise resilience: fallback to SQLite system of record
-    sqlite_docs = sqlite.get_documents(family_entity_id=target_entity)
-    return [DocumentResponse(**d) for d in sqlite_docs]
+    role = _membership_role(target_entity, current_user)
+    return [DocumentResponse(**d) for d in _list_entity_documents(target_entity, role)]
 
 
 @router.get("/suggestions", response_model=List[str])
@@ -426,21 +524,8 @@ async def get_document_suggestions(
         ]
 
     target_entity = family_entity_id or user_memberships[0]["family_entity_id"]
-    if not any(m["family_entity_id"] == target_entity for m in user_memberships):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Access denied: You do not hold active membership in family entity '{target_entity}'."
-        )
-
-    docs = []
-    try:
-        docs = pinecone_service.list_documents_from_pinecone(target_entity)
-    except Exception as e:
-        logger.debug(f"Pinecone suggestions listing unavailable: {e}")
-        docs = []
-
-    if not docs:
-        docs = sqlite.get_documents(family_entity_id=target_entity)
+    role = _membership_role(target_entity, current_user)
+    docs = _list_entity_documents(target_entity, role)
 
     if not docs:
         return [
@@ -486,21 +571,9 @@ async def get_document(
     current_user: Dict[str, Any] = Depends(auth.get_current_user)
 ):
     """
-    Retrieve document metadata directly from Pinecone Cloud Registry.
+    Retrieve document metadata (tenant- and ACL-checked against the SQL system of record).
     """
-    doc = pinecone_service.get_document_from_pinecone(document_id)
-    if not doc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found in Pinecone registry.")
-
-    doc_entity = doc.get("family_entity_id")
-    user_entities = {m["family_entity_id"] for m in (current_user.get("memberships") or [])}
-    if doc_entity not in user_entities:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied: You are not authorized to view this document."
-        )
-
-    return DocumentResponse(**doc)
+    return DocumentResponse(**_load_authorized_document(document_id, current_user))
 
 
 @router.get("/{document_id}/table", response_model=DocumentTableResponse)
@@ -512,20 +585,10 @@ async def get_document_table(
     current_user: Dict[str, Any] = Depends(auth.get_current_user)
 ):
     """
-    Retrieve full tabular records directly from Pinecone Cloud.
+    Retrieve full tabular records (Pinecone chunks, or SQL chunks when Pinecone is unavailable).
     Supports horizontal/vertical pagination across all rows and real-time search.
     """
-    doc = pinecone_service.get_document_from_pinecone(document_id)
-    if not doc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found in Pinecone registry.")
-
-    doc_entity = doc.get("family_entity_id")
-    user_entities = {m["family_entity_id"] for m in (current_user.get("memberships") or [])}
-    if doc_entity not in user_entities:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied: You are not authorized to view tables for this document."
-        )
+    doc = _load_authorized_document(document_id, current_user)
 
     filename = doc.get("original_name") or doc.get("filename") or "Document"
     columns, rows, total_rows, calc_pages = read_document_table_data(
@@ -555,11 +618,17 @@ async def delete_document(
 ):
     """
     Sovereign Document Deletion (APP 11 / right to erasure):
-    Atomically deletes document metadata, chunks, and vector embeddings across SQLite, Pinecone, and BM25 index.
+    Erases the document from Pinecone (vectors + registry), original-file storage (local / S3),
+    the BM25 index and the SQL system of record (cascading chunks & ACL).
+
+    Remote tiers are erased first and the SQL row last (Audit I-06): if Pinecone or file storage
+    cannot confirm deletion, the request fails with 502 and the SQL record is kept, so the
+    document stays visible and the (idempotent) delete can simply be retried. Erasure is never
+    reported for data that may still exist.
     """
-    doc = pinecone_service.get_document_from_pinecone(document_id)
-    if not doc:
-        doc = sqlite.get_document_by_id(document_id)
+    sql_doc = sqlite.get_document_by_id(document_id)
+    # SQL is authoritative for tenancy; the registry only covers legacy registry-only records
+    doc = sql_doc or vector_index.get_document(document_id)
     if not doc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
 
@@ -577,14 +646,31 @@ async def delete_document(
             detail="Permission denied: Only family_admin can delete documents from the vault."
         )
 
-    # 1. Delete from SQLite System of Record (cascades to chunks & ACL)
-    sqlite.delete_document(document_id)
+    # 1. Remote tiers first: Pinecone vectors + registry, then the stored original file
+    chunk_ids = sqlite.get_chunk_ids_for_document(document_id, doc_entity) if sql_doc else []
+    vectors_deleted = vector_index.delete_document(document_id, doc_entity, chunk_ids=chunk_ids)
+    stored_filename = doc.get("filename")
+    file_deleted = storage_service.delete_stored(document_id, stored_filename) if stored_filename else True
 
-    # 2. Delete from Pinecone Cloud (vectors & document registry)
-    pinecone_service.delete_document_from_pinecone(document_id, doc_entity)
+    if not (vectors_deleted and file_deleted):
+        incomplete = [t for t, done in (("vector index", vectors_deleted), ("file storage", file_deleted)) if not done]
+        sqlite.log_audit_event(
+            action="DOCUMENT_DELETE_INCOMPLETE",
+            user_id=current_user.get("id"),
+            family_entity_id=doc_entity,
+            resource_id=document_id,
+            details=f"Deletion not confirmed in: {', '.join(incomplete)}. SQL record retained for retry."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Document could not be fully erased from all storage tiers. It has been kept; please retry the deletion."
+        )
 
-    # 3. Delete from in-memory / cached BM25 lexical index
+    # 2. Delete from in-memory / cached BM25 lexical index
     lexical_index.delete_document_chunks(document_id)
+
+    # 3. Delete from SQL System of Record last (cascades to chunks & ACL)
+    sqlite.delete_document(document_id)
 
     # 4. Audit log event
     sqlite.log_audit_event(

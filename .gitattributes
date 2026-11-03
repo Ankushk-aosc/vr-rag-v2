@@ -1,0 +1,2 @@
+# Shell scripts run inside Linux containers (Audit I-17)
+*.sh text eol=lf

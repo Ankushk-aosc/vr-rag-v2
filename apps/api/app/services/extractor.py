@@ -5,6 +5,11 @@ from typing import Any, Dict, List, Optional
 from app.config import settings
 
 
+class ExtractionRejected(ValueError):
+    """A rejection written for the uploader (format, page limit). Other ValueErrors from parsing
+    libraries are internal and are never shown to clients (Audit I-11)."""
+
+
 class ExtractedPage:
     def __init__(
         self,
@@ -52,7 +57,7 @@ def extract_pdf(file_path: Path) -> List[ExtractedPage]:
     if len(doc) > MAX_PDF_PAGES:
         page_count = len(doc)
         doc.close()
-        raise ValueError(f"PDF exceeds maximum page limit of {MAX_PDF_PAGES} pages (contains {page_count} pages).")
+        raise ExtractionRejected(f"PDF exceeds maximum page limit of {MAX_PDF_PAGES} pages (contains {page_count} pages).")
 
     pages: List[ExtractedPage] = []
     
@@ -313,7 +318,7 @@ def extract_document(file_path: Path, mime_type: str = "") -> List[ExtractedPage
     suffix = file_path.suffix.lower()
     # Explicitly reject legacy binary formats (Audit F4)
     if suffix in [".doc", ".xls"]:
-        raise ValueError(
+        raise ExtractionRejected(
             f"Legacy binary format '{suffix}' is not supported due to security and parsing constraints. "
             f"Please upload modern formats (.docx, .xlsx) or PDF/CSV."
         )
@@ -332,4 +337,4 @@ def extract_document(file_path: Path, mime_type: str = "") -> List[ExtractedPage
         text = file_path.read_text(encoding="utf-8", errors="replace")
         return [ExtractedPage(page_number=1, text=text, confidence=1.0, engine="digital", is_scanned=False)]
     else:
-        raise ValueError(f"Unsupported file format: {suffix} (MIME: {mime_type})")
+        raise ExtractionRejected(f"Unsupported file format: {suffix} (MIME: {mime_type})")

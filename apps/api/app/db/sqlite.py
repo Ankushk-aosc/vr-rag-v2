@@ -5,19 +5,23 @@ delegating to repository implementations backed by either SQLite or PostgreSQL
 based on `settings.DATABASE_URL`.
 """
 
+import logging
 import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from app.config import settings
+from app.config import is_dev_environment, settings
 from app.db.repositories import (
     get_audit_repository,
     get_document_repository,
     get_family_repository,
+    get_local_index_repository,
     get_token_repository,
     get_user_repository,
     is_postgres,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def get_db_connection() -> sqlite3.Connection:
@@ -34,11 +38,11 @@ def get_db_connection() -> sqlite3.Connection:
 def init_db() -> None:
     """Initializes tables and seeds default demo administrator."""
     if is_postgres():
-        from app.db.models import Base
+        from app.db.postgres_setup import prepare_database
         from app.db.session import get_engine
 
-        engine = get_engine()
-        Base.metadata.create_all(bind=engine)
+        # Schema comes from the Alembic migrations (RLS included), never create_all (Audit I-16)
+        prepare_database(get_engine())
         seed_default_demo_admin()
         return
 
@@ -53,9 +57,14 @@ def init_db() -> None:
                 email TEXT NOT NULL UNIQUE,
                 hashed_password TEXT NOT NULL,
                 full_name TEXT NOT NULL,
+                token_version INTEGER NOT NULL DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)
+        # Session version (Audit I-15): bumped on password change to invalidate every older token
+        cursor.execute("PRAGMA table_info(users);")
+        if "token_version" not in [c[1] for c in cursor.fetchall()]:
+            cursor.execute("ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0;")
 
         # Family Entities (e.g. Smith Family Trust, Personal Portfolio)
         cursor.execute("""
@@ -153,6 +162,33 @@ def init_db() -> None:
             );
         """)
 
+        # Local vector index and document display metadata (Audit I-09, PRIVACY_MODE=local)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS chunk_vectors (
+                chunk_id TEXT PRIMARY KEY,
+                document_id TEXT NOT NULL,
+                family_entity_id TEXT NOT NULL,
+                allowed_roles TEXT NOT NULL,
+                embedder_model TEXT,
+                embedding_dim INTEGER NOT NULL,
+                embedding BLOB NOT NULL,
+                FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+                FOREIGN KEY (family_entity_id) REFERENCES family_entities(id) ON DELETE CASCADE
+            );
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS document_meta (
+                document_id TEXT PRIMARY KEY,
+                family_entity_id TEXT NOT NULL,
+                meta_json TEXT NOT NULL,
+                FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+                FOREIGN KEY (family_entity_id) REFERENCES family_entities(id) ON DELETE CASCADE
+            );
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_chunk_vectors_family ON chunk_vectors(family_entity_id);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_chunk_vectors_doc ON chunk_vectors(document_id);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_document_meta_family ON document_meta(family_entity_id);")
+
         # Performance and lookup indexes
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_chunks_doc_id ON document_chunks(document_id);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_chunks_page ON document_chunks(page_number);")
@@ -194,8 +230,29 @@ def init_db() -> None:
     seed_default_demo_admin()
 
 
+def demo_admin_seeding_allowed() -> bool:
+    """The demo admin has a publicly known password, so it is only seeded in development/test (Audit I-14)."""
+    return bool(settings.SEED_DEMO_ADMIN) and is_dev_environment(settings.ENVIRONMENT)
+
+
 def seed_default_demo_admin() -> None:
-    get_user_repository().seed_default_demo_admin()
+    if demo_admin_seeding_allowed():
+        get_user_repository().seed_default_demo_admin()
+        return
+
+    # Fail loudly if a database seeded by an older build still carries the demo account
+    if is_dev_environment(settings.ENVIRONMENT):
+        return
+    try:
+        existing = get_user_by_email(settings.DEMO_ADMIN_EMAIL)
+    except Exception:
+        return
+    if existing:
+        logger.critical(
+            "Demo administrator account '%s' exists in a %s environment. It was seeded with a publicly "
+            "known password: delete it or reset its password immediately.",
+            settings.DEMO_ADMIN_EMAIL, settings.ENVIRONMENT,
+        )
 
 
 # --- User & Family Operations ---
@@ -212,8 +269,8 @@ def get_user_by_id(user_id: str) -> Optional[Dict[str, Any]]:
     return get_user_repository().get_user_by_id(user_id)
 
 
-def update_user_password(user_id: str, hashed_password: str) -> None:
-    get_user_repository().update_user_password(user_id, hashed_password)
+def update_user_password(user_id: str, hashed_password: str) -> int:
+    return get_user_repository().update_user_password(user_id, hashed_password)
 
 
 def delete_user_account(user_id: str) -> bool:
@@ -268,6 +325,10 @@ def insert_chunks(chunks: List[Dict[str, Any]]) -> None:
 
 def get_chunks_by_ids(chunk_ids: List[str]) -> List[Dict[str, Any]]:
     return get_document_repository().get_chunks_by_ids(chunk_ids)
+
+
+def get_chunk_ids_for_document(document_id: str, family_entity_id: str) -> List[str]:
+    return get_document_repository().get_chunk_ids_for_document(document_id, family_entity_id)
 
 
 def get_documents_by_entity(entity_id: str, user_role: str) -> List[Dict[str, Any]]:
@@ -328,3 +389,33 @@ def is_token_revoked(jti: str) -> bool:
 
 def cleanup_expired_tokens() -> int:
     return get_token_repository().cleanup_expired_tokens()
+
+
+# --- Local vector index & document display metadata (Audit I-09) ---
+
+def upsert_chunk_vectors(rows: List[Dict[str, Any]]) -> int:
+    return get_local_index_repository().upsert_chunk_vectors(rows)
+
+
+def get_chunk_vectors(family_entity_id: str) -> List[Dict[str, Any]]:
+    return get_local_index_repository().get_chunk_vectors(family_entity_id)
+
+
+def delete_chunk_vectors(document_id: str, family_entity_id: str) -> int:
+    return get_local_index_repository().delete_chunk_vectors(document_id, family_entity_id)
+
+
+def get_chunks_without_vectors(family_entity_id: str) -> List[Dict[str, Any]]:
+    return get_local_index_repository().get_chunks_without_vectors(family_entity_id)
+
+
+def upsert_document_meta(document_id: str, family_entity_id: str, meta: Dict[str, Any]) -> None:
+    get_local_index_repository().upsert_document_meta(document_id, family_entity_id, meta)
+
+
+def get_document_meta(document_id: str) -> Optional[Dict[str, Any]]:
+    return get_local_index_repository().get_document_meta(document_id)
+
+
+def list_document_meta(family_entity_id: str) -> Dict[str, Dict[str, Any]]:
+    return get_local_index_repository().list_document_meta(family_entity_id)

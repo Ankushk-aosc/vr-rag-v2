@@ -12,6 +12,7 @@ from app.config import settings
 from app.services import auth, rag_engine, voice
 from app.services.upload_security import validate_audio_upload
 from app.middleware.rate_limiter import rate_limit
+from app.routers.query import resolve_roles
 
 router = APIRouter(prefix="/api/voice", tags=["Voice Interaction"])
 client_logger = logging.getLogger("voice.client")
@@ -154,16 +155,7 @@ async def ask_by_voice(
             grounded=False
         )
 
-    matched_roles = [
-        m["role"] for m in (current_user.get("memberships") or [])
-        if m["family_entity_id"] == family_entity_id
-    ]
-    if not matched_roles:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Access denied: You do not hold active membership in family entity '{family_entity_id}'."
-        )
-    user_roles = matched_roles
+    user_roles = resolve_roles(family_entity_id, current_user)
 
     try:
         rag_result = await rag_engine.execute_rag_query(

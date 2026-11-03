@@ -16,7 +16,7 @@ import time
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 # Ensure apps/api is in sys.path
 API_ROOT = Path(__file__).resolve().parent.parent

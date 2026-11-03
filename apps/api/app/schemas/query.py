@@ -52,7 +52,7 @@ class QueryRequest(BaseModel):
 
 class QueryResponse(BaseModel):
     answer: str
-    reasoning: str = ""
+    reasoning: str = ""  # always empty: model reasoning is never returned (Audit I-10); kept for API compatibility
     structured_data: Optional[StructuredAnswer] = None
     thinking_trace: List[ThinkingStageItem] = Field(default_factory=list)
     citations: List[CitationItem] = Field(default_factory=list)

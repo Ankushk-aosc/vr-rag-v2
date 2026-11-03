@@ -8,7 +8,11 @@ import time
 import threading
 from collections import defaultdict
 from typing import Dict, List, Optional
+import jwt
 from fastapi import HTTPException, Request, status
+
+from app.config import settings
+from app.services.auth import ALGORITHM
 
 
 class SlidingWindowRateLimiter:
@@ -67,20 +71,37 @@ class SlidingWindowRateLimiter:
 limiter = SlidingWindowRateLimiter()
 
 
-def rate_limit(max_requests: int = 60, window_seconds: int = 60):
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+def _verified_subject(auth_header: Optional[str]) -> Optional[str]:
+    """Returns the user id of a validly signed bearer token, else None (Audit I-03)."""
+    if not auth_header or not auth_header.startswith("Bearer "):
+        return None
+    try:
+        payload = jwt.decode(auth_header[7:].strip(), settings.APP_SECRET_KEY, algorithms=[ALGORITHM])
+    except jwt.PyJWTError:
+        return None
+    sub = payload.get("sub")
+    return str(sub) if sub else None
+
+
+def rate_limit(max_requests: int = 60, window_seconds: int = 60, per: str = "user"):
     """
     FastAPI Dependency to rate-limit endpoints.
-    Keyed by client IP or Authorization bearer token.
+
+    per="user": keyed by the verified token subject, falling back to client IP for missing,
+                forged or expired tokens (so rotating fake tokens cannot mint fresh buckets).
+    per="ip":   keyed by client IP only; used for unauthenticated routes such as login/register,
+                where any Authorization header is attacker-controlled.
     """
+    if per not in ("user", "ip"):
+        raise ValueError(f"Unknown rate limit scope '{per}'")
+
     async def dependency(request: Request):
-        # Derive client identity
-        auth_header = request.headers.get("Authorization")
-        if auth_header and auth_header.startswith("Bearer "):
-            # Use token prefix as client identifier for authenticated users
-            client_id = f"token:{auth_header[:32]}"
-        else:
-            client_ip = request.client.host if request.client else "unknown"
-            client_id = f"ip:{client_ip}"
+        subject = _verified_subject(request.headers.get("Authorization")) if per == "user" else None
+        client_id = f"user:{subject}" if subject else f"ip:{_client_ip(request)}"
 
         route_path = request.url.path
         rate_key = f"{client_id}:{route_path}"

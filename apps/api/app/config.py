@@ -1,15 +1,45 @@
+import ipaddress
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Environments where development conveniences (default secret, demo admin seed) are permitted
+DEV_ENVIRONMENTS = ("development", "test", "testing")
+
+
+def is_dev_environment(environment: Optional[str]) -> bool:
+    return (environment or "").strip().lower() in DEV_ENVIRONMENTS
+
+
+# Privacy architecture (Audit I-09). "local": documents, vectors, prompts and audio never leave this
+# deployment; every cloud setting (Pinecone, Groq, edge-tts, Textract, S3) is ignored. "cloud" is an
+# explicit opt-in to the disclosed cloud data flows.
+PRIVACY_MODES = ("local", "cloud")
+
+
+def is_private_endpoint(url: str) -> bool:
+    """True when url points at this machine or a private network (loopback, RFC 1918, link-local,
+    a bare service name like `ollama`, or a *.local / *.internal / *.localhost host)."""
+    host = (urlparse(url or "").hostname or "").lower()
+    if not host:
+        return False
+    if host == "localhost" or "." not in host or host.endswith((".local", ".internal", ".localhost")):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return ip.is_loopback or ip.is_private or ip.is_link_local
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
+        # Repo root, apps/, apps/api, then CWD. Slicing (not indexing) keeps shallow installs such as
+        # the /app/app/config.py container layout working (Audit I-17)
         env_file=[
-            Path(__file__).resolve().parents[3] / ".env",
-            Path(__file__).resolve().parents[2] / ".env",
-            Path(__file__).resolve().parents[1] / ".env",
+            *(parent / ".env" for parent in reversed(Path(__file__).resolve().parents[1:4])),
             Path(".env").resolve(),
             ".env",
         ],
@@ -27,10 +57,37 @@ class Settings(BaseSettings):
     UPLOADS_DIR: str = "data/uploads"
     MAX_FILE_SIZE_MB: int = 100
 
+    # Demo administrator seed (Audit I-14): only ever seeded in development/test environments
+    SEED_DEMO_ADMIN: bool = True
+    DEMO_ADMIN_EMAIL: str = "admin@sovereignfamily.com.au"
+    DEMO_ADMIN_PASSWORD: str = "SovereignAdmin2026!"  # dev-only credential, never seeded outside dev/test
+
+    # Privacy architecture (Audit I-09): see PRIVACY_MODES
+    PRIVACY_MODE: str = "local"
+    # Local OpenAI-compatible LLM server (Ollama, llama.cpp, vLLM, LM Studio) used in local mode
+    LOCAL_LLM_BASE_URL: str = "http://127.0.0.1:11434/v1"
+    LOCAL_LLM_MODEL: str = "qwen3:8b"
+    LOCAL_LLM_API_KEY: str = ""  # most local servers need none
+
+    @property
+    def is_local_mode(self) -> bool:
+        return self.PRIVACY_MODE == "local"
+
+    @model_validator(mode="after")
+    def validate_privacy_mode(self) -> "Settings":
+        self.PRIVACY_MODE = (self.PRIVACY_MODE or "").strip().lower()
+        if self.PRIVACY_MODE not in PRIVACY_MODES:
+            raise ValueError(f"PRIVACY_MODE must be one of {PRIVACY_MODES}, got '{self.PRIVACY_MODE}'.")
+        if self.is_local_mode and not is_private_endpoint(self.LOCAL_LLM_BASE_URL):
+            raise ValueError(
+                "PRIVACY_MODE=local requires LOCAL_LLM_BASE_URL to point at this machine or a private "
+                f"network, got '{self.LOCAL_LLM_BASE_URL}'. Set PRIVACY_MODE=cloud to use a hosted LLM."
+            )
+        return self
+
     @model_validator(mode="after")
     def validate_production_security(self) -> "Settings":
-        env = (self.ENVIRONMENT or "").strip().lower()
-        if env not in ("development", "test", "testing"):
+        if not is_dev_environment(self.ENVIRONMENT):
             if self.APP_SECRET_KEY == "dev-insecure-key-change-in-production" or len(self.APP_SECRET_KEY) < 32:
                 raise ValueError(
                     "CRITICAL SECURITY CONFIGURATION ERROR: In production and staging environments, "
@@ -56,7 +113,7 @@ class Settings(BaseSettings):
     # Groq Cloud LLM (Strict Cloud Provider, Zero Fallback)
     GROQ_API_KEY: Optional[str] = None
     GROQ_MODEL: str = "qwen/qwen3.8-27b"
-    # "medium" makes the model emit reasoning tokens that stream into the live thinking panel
+    # Reasoning effort for Groq reasoning models. Their <think> output is stripped server-side (Audit I-10)
     GROQ_REASONING_EFFORT: str = "medium"
 
     # Local Whisper Speech-to-Text & Voice

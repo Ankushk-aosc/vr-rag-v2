@@ -21,6 +21,8 @@ def _field(obj: Any, key: str, default: Any = None) -> Any:
 
 def get_pinecone_client() -> Optional[Any]:
     global _pinecone_client
+    if settings.is_local_mode:
+        return None  # nothing is sent to Pinecone in local privacy mode (Audit I-09)
     if not settings.PINECONE_API_KEY or settings.PINECONE_API_KEY == "your-pinecone-api-key-here":
         return None
     if _pinecone_client is None:
@@ -176,6 +178,8 @@ def query_similar_chunks(
 # --- Cloud-Native Document Registry in Pinecone (Zero Local Storage) ---
 
 DOCUMENTS_REGISTRY_NAMESPACE = "documents_registry"
+# Pinecone caps top_k at 1,000 when metadata is included
+REGISTRY_LIST_LIMIT = 1000
 
 
 def _hydrate_doc_meta(meta: Dict[str, Any]) -> Dict[str, Any]:
@@ -271,7 +275,12 @@ def save_document_to_pinecone(doc: Dict[str, Any]) -> None:
 def list_documents_from_pinecone(family_entity_id: str = "default_family") -> List[Dict[str, Any]]:
     """
     Retrieves registered documents from Pinecone cloud storage strictly scoped to family entity.
+
+    The tenant filter is applied inside Pinecone (Audit I-08). Previously a global top_k=100 query was
+    filtered in Python, so a family silently lost documents once all tenants together exceeded 100.
     """
+    if not family_entity_id:
+        return []
     try:
         index = get_index()
     except Exception as e:
@@ -281,14 +290,22 @@ def list_documents_from_pinecone(family_entity_id: str = "default_family") -> Li
     try:
         res = index.query(
             vector=unit_vec,
-            top_k=100,
+            top_k=REGISTRY_LIST_LIMIT,
             namespace=DOCUMENTS_REGISTRY_NAMESPACE,
+            filter={"family_entity_id": {"$eq": family_entity_id}},
             include_metadata=True
         )
+        matches = _field(res, "matches", []) or []
+        if len(matches) >= REGISTRY_LIST_LIMIT:
+            logger.warning(
+                "Pinecone registry listing for %s hit the %d-record cap; SQL fills in the rest.",
+                family_entity_id, REGISTRY_LIST_LIMIT,
+            )
         docs = []
-        for match in _field(res, "matches", []) or []:
+        for match in matches:
             meta = dict(_field(match, "metadata", {}) or {})
-            if family_entity_id and meta.get("family_entity_id") == family_entity_id:
+            # Defence in depth: never trust the index filter alone for tenancy
+            if meta.get("family_entity_id") == family_entity_id:
                 docs.append(_hydrate_doc_meta(meta))
         return docs
     except Exception as e:
@@ -315,30 +332,73 @@ def get_document_from_pinecone(doc_id: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def delete_document_from_pinecone(doc_id: str, family_entity_id: str = "default_family") -> None:
+def _list_ids_with_prefix(index: Any, prefix: str) -> List[str]:
+    """IDs in the default namespace starting with prefix (serverless `list`); [] if unsupported."""
+    ids: List[str] = []
+    try:
+        for page in index.list(prefix=prefix):
+            # SDK versions yield either a list of ids or a page object with `.vectors`
+            items = page if isinstance(page, (list, tuple)) else (getattr(page, "vectors", None) or [])
+            for item in items:
+                vid = item if isinstance(item, str) else (getattr(item, "id", None) or item.get("id"))
+                if vid:
+                    ids.append(vid)
+    except Exception as e:
+        logger.debug(f"Pinecone list(prefix={prefix}) unavailable: {e}")
+    return ids
+
+
+def delete_document_from_pinecone(
+    doc_id: str,
+    family_entity_id: str = "default_family",
+    chunk_ids: Optional[List[str]] = None,
+) -> bool:
     """
-    Deletes document registry record and all associated vector chunks from Pinecone.
+    Deletes the document registry record and all associated chunk vectors from Pinecone.
+
+    Returns True when everything was removed (or Pinecone is not configured, so nothing was stored),
+    False when any part could not be confirmed deleted (Audit I-06: never report erasure on failure).
+    Vectors are deleted by ID (known SQL chunk IDs + `{doc_id}_` prefix listing), because
+    delete-by-metadata-filter is not available on every index type; the filter is a fallback.
     """
+    if not get_pinecone_client():
+        return True
     try:
         index = get_index()
     except Exception as e:
-        logger.debug(f"Pinecone index unavailable: {e}")
-        return
+        logger.warning(f"Pinecone index unavailable while deleting document {doc_id}: {e}")
+        return False
+
+    ok = True
     # 1. Delete document metadata record from registry namespace
     try:
         index.delete(ids=[doc_id], namespace=DOCUMENTS_REGISTRY_NAMESPACE)
     except Exception as e:
         logger.warning(f"Error deleting doc metadata {doc_id} from Pinecone registry: {e}")
+        ok = False
 
     # 2. Delete chunk vectors from default namespace
+    ids = list(dict.fromkeys([*(chunk_ids or []), *_list_ids_with_prefix(index, f"{doc_id}_")]))
+    ids_deleted = False
+    try:
+        for i in range(0, len(ids), 1000):
+            index.delete(ids=ids[i:i + 1000])
+        ids_deleted = True
+    except Exception as e:
+        logger.warning(f"Error deleting vectors by id for document {doc_id} from Pinecone: {e}")
+
     try:
         index.delete(filter={"document_id": doc_id})
     except Exception as e:
-        logger.warning(f"Error deleting vectors for document {doc_id} from Pinecone: {e}")
+        if not ids_deleted:
+            logger.warning(f"Error deleting vectors for document {doc_id} from Pinecone: {e}")
+            ok = False
+        else:
+            logger.debug(f"Filter delete unsupported for {doc_id} (ids already deleted): {e}")
 
     # 3. Invalidate document name cache
-    global _doc_name_cache, _doc_name_cache_at
     _doc_name_cache.pop(doc_id, None)
+    return ok
 
 
 _doc_name_cache: Dict[str, str] = {}

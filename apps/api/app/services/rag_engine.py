@@ -5,7 +5,8 @@ Pipeline (every stage is timed and streamed to the client as it happens):
   1. understand  - normalise dates, fold in conversation context for follow-ups
   2. search      - Pinecone dense search + BM25 keyword search, run concurrently
   3. rank        - reciprocal-rank fusion, exact-date boosting, per-document diversity
-  4. reasoning   - the model's own reasoning tokens
+  4. reason      - the model answers; its private reasoning (<think>) is stripped server-side and
+                   never sent to the client or spoken (Audit I-10)
   5. answer      - Markdown answer tokens with numbered citations
 
 `stream_rag_events` yields event dicts consumed by the SSE endpoint; `execute_rag_query`
@@ -21,8 +22,8 @@ from fastapi import HTTPException
 
 from app.config import settings
 from app.middleware.token_budget import check_token_budget, guard_query_context
-from app.providers.factory import get_embedder, get_llm
-from app.services import embeddings, pinecone_service
+from app.providers.factory import get_llm
+from app.services import embeddings, pinecone_service, vector_index
 from app.services.grounding import verify_grounding
 from app.services.lexical_index import extract_dates, lexical_index
 from app.services.prompt_guard import (
@@ -30,6 +31,7 @@ from app.services.prompt_guard import (
     escape_xml_attribute,
     sanitize_conversation_history,
 )
+from app.services.safe_errors import log_with_reference, safe_message
 from app.services.usage import UsageRecorder
 
 logger = logging.getLogger(__name__)
@@ -76,11 +78,36 @@ PASSAGE_CHAR_LIMIT = 1400
 def get_groq_client():
     """Retained for backward compatibility with dashboard plan generation."""
     global _groq_client
+    if settings.is_local_mode:
+        return None  # dashboards fall back to their deterministic plan; nothing leaves (Audit I-09)
     if settings.GROQ_API_KEY:
         from groq import AsyncGroq
         if _groq_client is None or getattr(_groq_client, "api_key", None) != settings.GROQ_API_KEY:
             _groq_client = AsyncGroq(api_key=settings.GROQ_API_KEY, max_retries=0)
     return _groq_client
+
+
+_THINK_BLOCK = re.compile(r"<think>.*?</think>", re.S | re.I)
+_THINK_OPEN = re.compile(r"<think>", re.I)
+_THINK_CLOSE = re.compile(r"</think>", re.I)
+REASONING_ONLY_MESSAGE = (
+    "The language model used its whole response budget on reasoning and produced no answer. Please try again."
+)
+
+
+def strip_model_reasoning(raw: str) -> str:
+    """
+    Returns only the answer part of a model response (Audit I-10: chain-of-thought is never exposed).
+    Handles complete <think>...</think> blocks, reasoning whose opening tag was supplied by the chat
+    template ("... </think> answer"), and reasoning cut off by max_tokens ("<think> ..." never closed).
+    """
+    text = _THINK_BLOCK.sub("", raw or "")
+    if _THINK_CLOSE.search(text):
+        text = _THINK_CLOSE.split(text)[-1]
+    opened = _THINK_OPEN.search(text)
+    if opened:
+        text = text[:opened.start()]
+    return text.strip()
 
 
 def _friendly_llm_error(err: Exception) -> str:
@@ -94,7 +121,8 @@ def _friendly_llm_error(err: Exception) -> str:
         return "LLM rejected the API key. Check API keys in environment configuration."
     if "rate_limit" in text or "429" in text:
         return "LLM rate limit reached. Wait a few seconds and try again."
-    return f"Language model request failed: {text[:300]}"
+    # Provider error bodies can echo prompts, URLs or keys: log them, show only a reference (Audit I-11)
+    return safe_message("The language model request failed.", log_with_reference("LLM request failed", err))
 
 
 # ---------------------------------------------------------------------------
@@ -110,13 +138,15 @@ def _retrieval_query(question: str, history: List[Dict[str, str]]) -> str:
 
 
 async def _semantic_search(query: str, family_entity_id: str, user_roles: List[str], k: int) -> List[Dict[str, Any]]:
-    embedder = get_embedder()
-    try:
-        embed_res = await embedder.embed([query])
-        vector = embed_res.vectors[0]
-    except Exception:
-        vector = embeddings.embed_query(query)
-    return pinecone_service.query_similar_chunks(
+    # Query vectors MUST come from the same embedder that wrote the index. Ingestion
+    # (routers/documents.py) embeds with services.embeddings, so retrieval does too (Audit I-02).
+    # The provider-registry embedder (EMBEDDER_PROVIDER) does not feed this index.
+    vector = await asyncio.to_thread(embeddings.embed_query, query)
+    if len(vector) != settings.EMBEDDING_DIMENSION:
+        raise RuntimeError(
+            f"query embedding has {len(vector)} dims but the index expects {settings.EMBEDDING_DIMENSION}"
+        )
+    return vector_index.query_similar_chunks(
         query_vector=vector, top_k=k, family_entity_id=family_entity_id, user_roles=user_roles
     )
 
@@ -228,6 +258,7 @@ def _citations_for(passages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         page_num = p.get("page_no") or p.get("page_number", 1)
         citations.append({
             "ref": i,
+            "chunk_id": p.get("chunk_id", ""),  # required by CitationItem (POST /api/query)
             "document_id": doc_id,
             "document_name": name,
             "page_number": page_num,
@@ -347,7 +378,8 @@ async def stream_rag_events(
 
     def finish(stage: Dict[str, Any]) -> Dict[str, Any]:
         trace.append({
-            "title": stage["title"], "duration_ms": max(1, stage["duration_ms"]),
+            # _stage omits duration_ms for sub-millisecond stages (common with in-process local search)
+            "title": stage["title"], "duration_ms": max(1, stage.get("duration_ms", 0)),
             "status": "done", "details": stage["detail"],
         })
         return stage
@@ -379,7 +411,7 @@ async def stream_rag_events(
     search_notes = []
     if isinstance(semantic, Exception):
         logger.error("Semantic search failed: %s", semantic)
-        search_notes.append(f"semantic search unavailable ({str(semantic)[:80]})")
+        search_notes.append("semantic search unavailable")  # details are in the log (Audit I-11)
         semantic = []
     if isinstance(lexical, Exception):
         logger.error("Keyword search failed: %s", lexical)
@@ -444,7 +476,6 @@ async def stream_rag_events(
     t3 = time.perf_counter()
     model_name = llm.info.default_model or "llm"
     yield _stage("reason", "Reasoning over evidence", "active", model_name)
-    reasoning_text = ""
     answer_text = ""
     n_passages, n_history = len(passages), len(history)
 
@@ -472,16 +503,10 @@ async def stream_rag_events(
         )
 
     raw_text = resp.text or ""
-    if "<think>" in raw_text and "</think>" in raw_text:
-        parts = raw_text.split("</think>", 1)
-        reasoning_text = parts[0].replace("<think>", "").strip()
-        answer_text = parts[1].strip()
-    else:
-        reasoning_text = ""
-        answer_text = raw_text
-
-    if reasoning_text:
-        yield {"type": "reasoning", "delta": reasoning_text}
+    answer_text = strip_model_reasoning(raw_text)
+    if not answer_text and raw_text.strip():
+        yield {"type": "error", "message": REASONING_ONLY_MESSAGE}
+        return
     yield finish(_stage("reason", "Reasoning over evidence", "done", resp.model, int((time.perf_counter() - t3) * 1000)))
 
     t4 = time.perf_counter()
@@ -501,7 +526,6 @@ async def stream_rag_events(
         "type": "done",
         "answer": answer_text,
         "mode": mode,
-        "reasoning": reasoning_text,
         "structured_data": parse_structured_answer(answer_text) if mode != "voice" else None,
         "thinking_trace": trace,
         "citations": shown,

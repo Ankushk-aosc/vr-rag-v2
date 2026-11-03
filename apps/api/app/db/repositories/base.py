@@ -13,7 +13,9 @@ class BaseUserRepository(ABC):
     def get_user_by_id(self, user_id: str) -> Optional[Dict[str, Any]]: ...
 
     @abstractmethod
-    def update_user_password(self, user_id: str, hashed_password: str) -> None: ...
+    def update_user_password(self, user_id: str, hashed_password: str) -> int:
+        """Stores the new hash and bumps token_version in one statement. Returns the new version."""
+        ...
 
     @abstractmethod
     def delete_user_account(self, user_id: str) -> bool: ...
@@ -34,6 +36,11 @@ class BaseFamilyRepository(ABC):
 
     @abstractmethod
     def get_user_memberships(self, user_id: str) -> List[Dict[str, Any]]: ...
+
+
+class DuplicateDocumentError(Exception):
+    """The family already has a document with this file hash (UNIQUE(family_entity_id, file_hash)).
+    Raised by insert_document so the database constraint, not a prior read, decides duplicates (Audit I-24)."""
 
 
 class BaseDocumentRepository(ABC):
@@ -60,6 +67,9 @@ class BaseDocumentRepository(ABC):
 
     @abstractmethod
     def get_chunks_by_ids(self, chunk_ids: List[str]) -> List[Dict[str, Any]]: ...
+
+    @abstractmethod
+    def get_chunk_ids_for_document(self, document_id: str, family_entity_id: str) -> List[str]: ...
 
     @abstractmethod
     def get_documents_by_entity(self, entity_id: str, user_role: str) -> List[Dict[str, Any]]: ...
@@ -104,3 +114,35 @@ class BaseTokenRepository(ABC):
 
     @abstractmethod
     def cleanup_expired_tokens(self) -> int: ...
+
+
+class BaseLocalIndexRepository(ABC):
+    """Local vector index + document display metadata (Audit I-09, PRIVACY_MODE=local)."""
+
+    @abstractmethod
+    def upsert_chunk_vectors(self, rows: List[Dict[str, Any]]) -> int:
+        """rows: chunk_id, document_id, family_entity_id, allowed_roles (list), embedder_model,
+        embedding_dim, embedding (float32 bytes). Returns the number written."""
+        ...
+
+    @abstractmethod
+    def get_chunk_vectors(self, family_entity_id: str) -> List[Dict[str, Any]]:
+        """All vectors of one tenant: chunk_id, document_id, allowed_roles (list), embedding (bytes)."""
+        ...
+
+    @abstractmethod
+    def delete_chunk_vectors(self, document_id: str, family_entity_id: str) -> int: ...
+
+    @abstractmethod
+    def get_chunks_without_vectors(self, family_entity_id: str) -> List[Dict[str, Any]]:
+        """Chunks of one tenant with no local vector: id, document_id, content, allowed_role."""
+        ...
+
+    @abstractmethod
+    def upsert_document_meta(self, document_id: str, family_entity_id: str, meta: Dict[str, Any]) -> None: ...
+
+    @abstractmethod
+    def get_document_meta(self, document_id: str) -> Optional[Dict[str, Any]]: ...
+
+    @abstractmethod
+    def list_document_meta(self, family_entity_id: str) -> Dict[str, Dict[str, Any]]: ...

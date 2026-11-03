@@ -116,8 +116,7 @@ class PineconeVectorStore(VectorStore):
         if not self.is_configured():
             return False
         try:
-            pinecone_service.delete_document_from_pinecone(document_id, family_entity_id)
-            return True
+            return pinecone_service.delete_document_from_pinecone(document_id, family_entity_id)
         except Exception as e:
             logger.warning("Pinecone delete_by_document error: %s", e)
             return False

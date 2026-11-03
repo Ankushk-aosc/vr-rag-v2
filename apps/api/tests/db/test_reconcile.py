@@ -1,8 +1,11 @@
+import pytest
 """Tests transactional ingestion error recovery and the storage reconcile job."""
 
 import uuid
 from app.db import sqlite
 from app.db.reconcile import reconcile_storage
+
+pytestmark = pytest.mark.usefixtures("cloud_mode")  # Pinecone-path tests (Audit I-09: local is the default)
 
 
 def test_transactional_ingestion_pending_to_failed_reconciliation(monkeypatch):

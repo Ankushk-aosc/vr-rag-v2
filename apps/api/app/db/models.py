@@ -10,6 +10,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     Numeric,
     String,
     Text,
@@ -30,6 +31,8 @@ class UserModel(Base):
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Session version (Audit I-15): access tokens carry it as `ver`; a password change bumps it
+    token_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -130,7 +133,8 @@ class DocumentAclModel(Base):
 class DocumentChunkModel(Base):
     __tablename__ = "document_chunks"
 
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    # Chunk ids are "{document_id}_p{page}_c{n}", longer than a UUID (Audit I-16, migration 006)
+    id: Mapped[str] = mapped_column(String(255), primary_key=True, default=lambda: str(uuid.uuid4()))
     document_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True
     )
@@ -211,3 +215,37 @@ class LLMUsageModel(Base):
         Index("idx_llm_usage_family_created", "family_entity_id", "created_at"),
         Index("idx_llm_usage_user_created", "user_id", "created_at"),
     )
+
+
+class ChunkVectorModel(Base):
+    """Local vector index (Audit I-09): one embedding per chunk, scored in-process. Text stays in document_chunks."""
+    __tablename__ = "chunk_vectors"
+
+    chunk_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    document_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    family_entity_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("family_entities.id", ondelete="CASCADE"), nullable=False
+    )
+    allowed_roles: Mapped[str] = mapped_column(Text, nullable=False)  # JSON list
+    embedder_model: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    embedding_dim: Mapped[int] = mapped_column(Integer, nullable=False)
+    embedding: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)  # float32, L2-normalised
+
+    __table_args__ = (
+        Index("idx_chunk_vectors_family", "family_entity_id"),
+    )
+
+
+class DocumentMetaModel(Base):
+    """Local display metadata (columns, sample rows, preview) that previously lived only in Pinecone."""
+    __tablename__ = "document_meta"
+
+    document_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True
+    )
+    family_entity_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("family_entities.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    meta_json: Mapped[str] = mapped_column(Text, nullable=False)

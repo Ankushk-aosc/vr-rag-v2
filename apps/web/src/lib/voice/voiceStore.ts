@@ -21,6 +21,11 @@ export interface VoiceSnapshot {
   standby: boolean;
   /** True briefly when "Hey Aether" or "Hi Aether" has just been heard. */
   wakeWordDetected: boolean;
+  /**
+   * Backend privacy mode (Audit I-26). Browser speech services that can send audio or text to a cloud
+   * (Chrome SpeechRecognition → Google, remote speechSynthesis voices) are used only when this is "cloud".
+   */
+  privacyMode: "local" | "cloud" | "unknown";
 }
 
 const initial: VoiceSnapshot = {
@@ -35,7 +40,13 @@ const initial: VoiceSnapshot = {
   wakeWordEnabled: true,
   standby: false,
   wakeWordDetected: false,
+  privacyMode: "unknown",
 };
+
+/** Fail closed: cloud browser speech only after the API has confirmed PRIVACY_MODE=cloud. */
+export function cloudSpeechAllowed(): boolean {
+  return snapshot.privacyMode === "cloud";
+}
 
 let snapshot: VoiceSnapshot = initial;
 const listeners = new Set<() => void>();

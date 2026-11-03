@@ -17,6 +17,9 @@ logger = logging.getLogger(__name__)
 
 def get_ocr_engine(engine_name: Optional[str] = None) -> OcrEngine:
     name = (engine_name or settings.OCR_ENGINE).lower()
+    if name == "textract" and settings.is_local_mode:
+        logger.warning("OCR_ENGINE=textract is ignored in PRIVACY_MODE=local; using Tesseract.")
+        name = "tesseract"
     if name == "textract":
         return TextractEngine()
     elif name == "noop":

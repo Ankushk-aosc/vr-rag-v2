@@ -88,6 +88,15 @@ def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta]
     return jwt.encode(to_encode, settings.APP_SECRET_KEY, algorithm=ALGORITHM)
 
 
+def issue_access_token(user: Dict[str, Any]) -> str:
+    """Access token bound to the user's current session version (Audit I-15)."""
+    return create_access_token({
+        "sub": user["id"],
+        "email": user["email"],
+        "ver": int(user.get("token_version") or 0),
+    })
+
+
 def decode_access_token(token: str) -> Dict[str, Any]:
     try:
         payload = jwt.decode(token, settings.APP_SECRET_KEY, algorithms=[ALGORITHM])
@@ -98,12 +107,61 @@ def decode_access_token(token: str) -> Dict[str, Any]:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authorization token.")
 
 
+# Family invites (Audit I-01): joining an existing family requires a signed, single-use,
+# expiring token issued by a family_admin of that family.
+INVITE_TOKEN_TYPE = "family_invite"
+INVITABLE_ROLES = ("family_member", "read_only_adviser")
+INVITE_MAX_HOURS = 168
+
+
+def create_invite_token(family_entity_id: str, role: str, inviter_id: str, expires_hours: int) -> Dict[str, Any]:
+    if role not in INVITABLE_ROLES:
+        raise ValueError(f"Role '{role}' cannot be granted by invite.")
+    hours = max(1, min(int(expires_hours), INVITE_MAX_HOURS))
+    expires_at = datetime.now(timezone.utc) + timedelta(hours=hours)
+    jti = str(uuid.uuid4())
+    token = jwt.encode(
+        {
+            "typ": INVITE_TOKEN_TYPE,
+            "fam": family_entity_id,
+            "role": role,
+            "inv": inviter_id,
+            "jti": jti,
+            "exp": expires_at,
+        },
+        settings.APP_SECRET_KEY,
+        algorithm=ALGORITHM,
+    )
+    return {"token": token, "jti": jti, "expires_at": expires_at.isoformat()}
+
+
+def decode_invite_token(token: str) -> Dict[str, Any]:
+    """Validates signature, expiry and token type. Raises 403 on any failure (fail closed)."""
+    try:
+        payload = jwt.decode(token, settings.APP_SECRET_KEY, algorithms=[ALGORITHM])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Family invite has expired.")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid family invite.")
+    if (
+        payload.get("typ") != INVITE_TOKEN_TYPE
+        or not payload.get("fam")
+        or not payload.get("jti")
+        or payload.get("role") not in INVITABLE_ROLES
+    ):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid family invite.")
+    return payload
+
+
 async def get_current_user_optional(
     auth_cred: Optional[HTTPAuthorizationCredentials] = Security(security)
 ) -> Optional[Dict[str, Any]]:
     if not auth_cred:
         return None
     payload = decode_access_token(auth_cred.credentials)
+    # Invite (or any other typed) tokens must never authenticate API calls
+    if payload.get("typ") not in (None, "access"):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authorization token.")
     user_id = payload.get("sub")
     if not user_id:
         raise HTTPException(
@@ -125,7 +183,15 @@ async def get_current_user_optional(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User account not found or deactivated. Access denied."
         )
-    
+    # Tokens issued before the last password change are dead (Audit I-15). Tokens minted before
+    # versioning existed carry no `ver` and count as version 0.
+    if int(payload.get("ver") or 0) != int(user.get("token_version") or 0):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Your password was changed. Please log in again."
+        )
+    user.pop("token_version", None)
+
     # Derive real memberships strictly from system of record (fail closed, never default to admin)
     memberships = sqlite.get_user_memberships(user_id)
     user["memberships"] = memberships

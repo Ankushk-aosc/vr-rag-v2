@@ -207,6 +207,7 @@ def test_known_model_cost_calculation():
 
 def test_fake_to_openai_compatible_swap(monkeypatch):
     """Swapping provider to openai_compatible executes correctly and tracks usage."""
+    monkeypatch.setattr(settings, "PRIVACY_MODE", "cloud")  # hosted endpoint = cloud opt-in (Audit I-09)
     monkeypatch.setattr(settings, "LLM_PROVIDER", "openai_compatible")
     monkeypatch.setattr(settings, "LLM_BASE_URL", "https://api.openai.com/v1")
     monkeypatch.setattr(settings, "LLM_API_KEY", "mock_key")
@@ -249,6 +250,8 @@ def test_rls_hides_other_tenants_llm_usage():
             END $$;
         """))
 
+        # Seeding two tenants at once needs the explicit system context (Audit I-16)
+        session.execute(text("SELECT set_config('app.rls_bypass', 'on', true)"))
         # Seed family entities
         session.execute(text("INSERT INTO family_entities (id, name) VALUES (:a, 'Fam A'), (:b, 'Fam B') ON CONFLICT DO NOTHING;"), {"a": fam_a, "b": fam_b})
 
@@ -264,7 +267,7 @@ def test_rls_hides_other_tenants_llm_usage():
 
     # Query with tenant context = fam_a
     with Session(engine) as session:
-        session.execute(text("SET LOCAL app.current_family_ids = :val"), {"val": fam_a})
+        session.execute(text("SELECT set_config('app.current_family_ids', :val, true)"), {"val": fam_a})
         rows = session.execute(text("SELECT id, family_entity_id FROM llm_usage")).all()
         retrieved_ids = {r.id for r in rows}
 

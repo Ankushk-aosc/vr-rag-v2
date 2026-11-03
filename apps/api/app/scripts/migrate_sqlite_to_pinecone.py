@@ -15,6 +15,9 @@ from app.services.pinecone_service import (
 
 
 def run_migration():
+    if settings.is_local_mode:
+        # Copying documents to Pinecone is exactly what local privacy mode forbids (Audit I-09)
+        raise SystemExit("Refusing to upload to Pinecone: PRIVACY_MODE=local. Set PRIVACY_MODE=cloud to opt in.")
     print("=" * 60)
     print("STARTING SQLITE -> PINECONE CLOUD STORAGE MIGRATION")
     print(f"Source Database: {settings.SQLITE_DB_PATH}")

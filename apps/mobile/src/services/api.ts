@@ -1,12 +1,15 @@
 import { Platform } from "react-native";
-import { DocumentRecord, QueryResponse, VoiceQueryResponse } from "../types";
+import { AuthSession, DocumentRecord, QueryResponse, VoiceQueryResponse } from "../types";
 
 // Default backend host (configured via EXPO_PUBLIC_API_URL or platform standard localhost)
 const DEFAULT_HOST =
   process.env.EXPO_PUBLIC_API_URL ||
   (Platform.OS === "android" ? "http://10.0.2.2:8000" : "http://localhost:8000");
 let activeBaseUrl = DEFAULT_HOST;
+// The JWT lives in memory only (Audit I-12): nothing is written to device storage, so closing the app
+// signs the user out. Tokens expire after 24 h server-side.
 let activeAuthToken: string | null = null;
+let unauthorizedHandler: (() => void) | null = null;
 
 export function getBaseUrl(): string {
   return activeBaseUrl;
@@ -24,6 +27,24 @@ export function getAuthToken(): string | null {
   return activeAuthToken;
 }
 
+/** Called once when any request comes back 401 (expired, revoked or missing token). */
+export function setUnauthorizedHandler(handler: (() => void) | null) {
+  unauthorizedHandler = handler;
+}
+
+/** Throws the API's error detail for non-2xx responses; a 401 also ends the session. */
+async function ensureOk(res: Response, fallback: string): Promise<void> {
+  if (res.ok) return;
+  const err = await res.json().catch(() => ({}));
+  if (res.status === 401) {
+    activeAuthToken = null;
+    unauthorizedHandler?.();
+    throw new Error("Your session has ended. Please sign in again.");
+  }
+  const detail = typeof err.detail === "string" ? err.detail : err.detail?.error;
+  throw new Error(detail || fallback);
+}
+
 export function getAuthHeaders(extraHeaders: Record<string, string> = {}): Record<string, string> {
   const headers = { ...extraHeaders };
   if (activeAuthToken) {
@@ -32,19 +53,40 @@ export function getAuthHeaders(extraHeaders: Record<string, string> = {}): Recor
   return headers;
 }
 
-export async function loginUser(email: string, password: string): Promise<any> {
-  const res = await fetch(`${activeBaseUrl}/api/auth/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password }),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || "Login failed");
+export async function loginUser(email: string, password: string): Promise<AuthSession> {
+  let res: Response;
+  try {
+    res = await fetch(`${activeBaseUrl}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: email.trim(), password }),
+    });
+  } catch {
+    throw new Error(`Cannot reach the server at ${activeBaseUrl}. Check EXPO_PUBLIC_API_URL and your network.`);
   }
-  const data = await res.json();
+  if (!res.ok) {
+    // A 401 here means wrong credentials, not an expired session, so don't route through ensureOk
+    const err = await res.json().catch(() => ({}));
+    throw new Error((typeof err.detail === "string" && err.detail) || "Sign-in failed.");
+  }
+  const data: AuthSession = await res.json();
+  if (!data.access_token || !data.user?.memberships?.length) {
+    throw new Error("This account has no family office memberships.");
+  }
   setAuthToken(data.access_token);
   return data;
+}
+
+/** Revokes the token server-side (best effort), then forgets it locally. */
+export async function logoutUser(): Promise<void> {
+  const headers = getAuthHeaders();
+  activeAuthToken = null;
+  if (!headers["Authorization"]) return;
+  try {
+    await fetch(`${activeBaseUrl}/api/auth/logout`, { method: "POST", headers });
+  } catch {
+    /* offline: the token still expires server-side */
+  }
 }
 
 export async function fetchDocuments(entityId?: string): Promise<DocumentRecord[]> {
@@ -55,7 +97,7 @@ export async function fetchDocuments(entityId?: string): Promise<DocumentRecord[
     const res = await fetch(url, {
       headers: getAuthHeaders(),
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}: Failed to fetch documents`);
+    await ensureOk(res, `HTTP ${res.status}: Failed to fetch documents`);
     const data = await res.json();
     return Array.isArray(data) ? data : (data.documents || []);
   } catch (err) {
@@ -66,7 +108,7 @@ export async function fetchDocuments(entityId?: string): Promise<DocumentRecord[
 
 export async function queryAssistant(
   question: string,
-  entityId: string = "default_family"
+  entityId: string
 ): Promise<QueryResponse> {
   const res = await fetch(`${activeBaseUrl}/api/query`, {
     method: "POST",
@@ -78,17 +120,14 @@ export async function queryAssistant(
     }),
   });
 
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || "Query failed");
-  }
+  await ensureOk(res, "Query failed");
 
   return await res.json();
 }
 
 export async function voiceAskAssistant(
   audioUri: string,
-  entityId: string = "default_family"
+  entityId: string
 ): Promise<VoiceQueryResponse> {
   const formData = new FormData();
   
@@ -109,10 +148,7 @@ export async function voiceAskAssistant(
     }),
   });
 
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || "Voice request failed");
-  }
+  await ensureOk(res, "Voice request failed");
 
   return await res.json();
 }
@@ -121,7 +157,7 @@ export async function uploadDocument(
   fileUri: string,
   fileName: string,
   mimeType: string,
-  entityId: string = "default_family",
+  entityId: string,
   allowedRole: string = "family_member"
 ): Promise<{ message: string; document: DocumentRecord }> {
   const formData = new FormData();
@@ -143,10 +179,7 @@ export async function uploadDocument(
     }),
   });
 
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || "Upload failed");
-  }
+  await ensureOk(res, "Upload failed");
 
   return await res.json();
 }
@@ -157,10 +190,7 @@ export async function deleteDocument(documentId: string): Promise<{ message: str
     headers: getAuthHeaders(),
   });
 
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || "Document deletion failed");
-  }
+  await ensureOk(res, "Document deletion failed");
 
   return await res.json();
 }

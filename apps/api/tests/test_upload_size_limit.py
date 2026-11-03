@@ -8,6 +8,8 @@ from app.routers.documents import MAX_FILE_SIZE
 from app.services import auth
 from app.db import sqlite
 
+pytestmark = pytest.mark.usefixtures("cloud_mode")  # Pinecone-path tests (Audit I-09: local is the default)
+
 
 client = TestClient(app)
 
