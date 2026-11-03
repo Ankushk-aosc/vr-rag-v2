@@ -78,10 +78,16 @@ class BaseDocumentRepository(ABC):
     def get_all_documents(self) -> List[Dict[str, Any]]: ...
 
     @abstractmethod
+    def get_lexical_chunks(self) -> List[Dict[str, Any]]:
+        """Every chunk with its tenant, document name and ACL role, for rebuilding the keyword index.
+        Cross-tenant: callers partition the rows by family_entity_id before any search (Audit I-28)."""
+
+    @abstractmethod
     def get_document_by_id(self, doc_id: str) -> Optional[Dict[str, Any]]: ...
 
     @abstractmethod
-    def get_document_names(self, family_entity_id: Optional[str] = None) -> Dict[str, str]: ...
+    def get_document_names(self, family_entity_id: str) -> Dict[str, str]:
+        """document_id -> display name for one family; {} without a family (Audit I-20)."""
 
 
 class BaseAuditRepository(ABC):

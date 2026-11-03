@@ -295,7 +295,7 @@ def test_citations_to_scanned_pages_work():
         }
     ]
 
-    citations = _citations_for(passages)
+    citations = _citations_for(passages, "default_family")
     assert len(citations) == 1
     c = citations[0]
     assert c["ref"] == 1

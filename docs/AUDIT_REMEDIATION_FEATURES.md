@@ -4,7 +4,12 @@
 **System:** Aether Sovereign Financial Pavilion (`VR-RAG`)  
 **Target Environment:** Australian Family Office Spatial Intelligence Platform  
 **Compliance Standard:** Australian Privacy Principles (APPs, Privacy Act 1988), ASIC RG 244  
-**Test Suite Status:** 85/85 Pytest Unit & Integration Tests Passing (100% Pass Rate)
+**Test Suite Status (October 2026 snapshot):** 85/85 tests passing at the time of this report
+
+> **Historical report.** This describes the October 2026 remediation as it stood then. The suite has grown since,
+> and CI (`.github/workflows/ci.yml`) is the current source of truth for test status. Later changes, including the
+> `PRIVACY_MODE` local/cloud architecture, PostgreSQL RLS enforcement and Docker deployment, are described in the
+> README and `docs/runbook.md`; the issue-by-issue record is in `AGENT_MEMORY.md`.
 
 ---
 
@@ -59,7 +64,7 @@ The following dedicated, modular components were engineered to adhere to strict 
 ### Phase 1: Mandatory Authentication & Server-Side Tenancy
 - **Audit Findings Remediated:** `S1`, `S2`, `S4`, `R1`, `U1`.
 - **Enforced JWT Authentication:** All data, query, voice, and document endpoints now mandate `Depends(auth.get_current_user)`. Unauthenticated access strictly returns `HTTP 401 Unauthorized`.
-- **Server-Side Tenancy Isolation:** Client-supplied tenancy headers and body fields are rejected. The user's active tenant entity (`family_entity_id`) is resolved directly from cryptographically signed JWT claims and verified against the SQLite database.
+- **Server-Side Tenancy Isolation:** Unauthenticated or unverified tenancy is rejected. The client names the target entity (`family_entity_id`), and the server verifies the authenticated user's membership of it before any data access.
 - **Role-Based Access Control (RBAC):** Users must hold active membership in the target entity. Cross-tenant access attempts are rejected with `HTTP 403 Forbidden`.
 - **Web & Mobile Integration:** Both Next.js web client and Expo mobile client inject `Authorization: Bearer <token>` on all requests.
 
@@ -73,7 +78,7 @@ The following dedicated, modular components were engineered to adhere to strict 
 
 ### Phase 3: Information Leakage & Secret Hardening
 - **Audit Findings Remediated:** `S3`, `S5`, `S6`, `S10`, `S11`, `S16`.
-- **Fail-Fast Secret Validation:** Server refuses to start up if `ENVIRONMENT != "development"` and `JWT_SECRET_KEY` is a default placeholder or shorter than 32 characters.
+- **Fail-Fast Secret Validation:** Server refuses to start up if `ENVIRONMENT != "development"` and `APP_SECRET_KEY` is a default placeholder or shorter than 32 characters.
 - **Constant-Time Password Verification:** Implemented constant-time dummy password hashing on non-existent user lookups, completely eliminating timing enumeration side-channels.
 - **PBKDF2 Iteration Upgrade:** Upgraded password hashing work factor to 600,000 iterations (OWASP standard) while retaining backward compatibility for legacy hashes.
 - **Audit Trail Tenant Scoping:** Scoped `/api/auth/audit` strictly by the authorized family entity. Regular members can only inspect their own user actions; only `family_admin` can inspect entity-wide audit records.
@@ -117,7 +122,7 @@ The following dedicated, modular components were engineered to adhere to strict 
 
 ---
 
-## 4. Test Verification Summary
+## 4. Test Verification Summary (October 2026 snapshot)
 
 ```
 Total Test Suites: 7 dedicated remediation suites + existing regression suites

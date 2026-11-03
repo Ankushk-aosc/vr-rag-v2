@@ -339,11 +339,15 @@ def get_all_documents() -> List[Dict[str, Any]]:
     return get_document_repository().get_all_documents()
 
 
+def get_lexical_chunks() -> List[Dict[str, Any]]:
+    return get_document_repository().get_lexical_chunks()
+
+
 def get_document_by_id(doc_id: str) -> Optional[Dict[str, Any]]:
     return get_document_repository().get_document_by_id(doc_id)
 
 
-def get_document_names(family_entity_id: Optional[str] = None) -> Dict[str, str]:
+def get_document_names(family_entity_id: str) -> Dict[str, str]:
     return get_document_repository().get_document_names(family_entity_id)
 
 

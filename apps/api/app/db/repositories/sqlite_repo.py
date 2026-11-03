@@ -325,6 +325,17 @@ class SqliteDocumentRepository(BaseDocumentRepository):
             cursor.execute("SELECT * FROM documents ORDER BY uploaded_at DESC")
             return [dict(row) for row in cursor.fetchall()]
 
+    def get_lexical_chunks(self) -> List[Dict[str, Any]]:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT c.id, c.document_id, c.page_number, c.is_table, c.content, d.family_entity_id, d.original_name, a.allowed_role
+                FROM document_chunks c
+                JOIN documents d ON c.document_id = d.id
+                LEFT JOIN document_acl a ON c.document_id = a.document_id AND d.family_entity_id = a.family_entity_id
+            """)
+            return [dict(row) for row in cursor.fetchall()]
+
     def get_document_by_id(self, doc_id: str) -> Optional[Dict[str, Any]]:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -332,16 +343,15 @@ class SqliteDocumentRepository(BaseDocumentRepository):
             row = cursor.fetchone()
             return dict(row) if row else None
 
-    def get_document_names(self, family_entity_id: Optional[str] = None) -> Dict[str, str]:
+    def get_document_names(self, family_entity_id: str) -> Dict[str, str]:
+        if not family_entity_id:
+            return {}  # never a cross-tenant name map (Audit I-20)
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            if family_entity_id:
-                cursor.execute(
-                    "SELECT id, original_name, filename FROM documents WHERE family_entity_id = ?",
-                    (family_entity_id,),
-                )
-            else:
-                cursor.execute("SELECT id, original_name, filename FROM documents")
+            cursor.execute(
+                "SELECT id, original_name, filename FROM documents WHERE family_entity_id = ?",
+                (family_entity_id,),
+            )
             return {
                 row["id"]: row["original_name"] or row["filename"]
                 for row in cursor.fetchall()

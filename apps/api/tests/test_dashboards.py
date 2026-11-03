@@ -23,7 +23,7 @@ ROWS = [
 
 @pytest.fixture(autouse=True)
 def no_doc_names(monkeypatch):
-    monkeypatch.setattr(datasets.pinecone_service, "get_document_names", lambda force=False: {})
+    monkeypatch.setattr(datasets.pinecone_service, "get_document_names", lambda family_entity_id, force=False: {})
 
 
 def build(chunks):

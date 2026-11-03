@@ -5,13 +5,24 @@ import * as THREE from "three";
 import { DeviceMotion } from "expo-sensors";
 import { Compass, Eye, Smartphone } from "lucide-react-native";
 import { THEME, ThemeMode } from "../constants/theme";
+import { DocumentRecord } from "../types";
 
 interface SpatialGyroViewProps {
   theme: ThemeMode;
-  onSelectDocument?: (docTitle: string) => void;
+  /** The selected vault's real documents; one floating slab is shown per document (up to SLAB_SLOTS). */
+  documents: DocumentRecord[];
 }
 
-export function SpatialGyroView({ theme, onSelectDocument }: SpatialGyroViewProps) {
+// Gallery positions for the document slabs. No placeholder documents are ever shown: an empty vault
+// renders an empty gallery (master plan #6: no mock data in production paths).
+const SLAB_SLOTS: { pos: [number, number, number]; rotY: number }[] = [
+  { pos: [-1.6, 1.3, -0.6], rotY: 0.35 },
+  { pos: [1.6, 1.3, -0.6], rotY: -0.35 },
+  { pos: [-0.8, 1.6, -1.6], rotY: 0.15 },
+  { pos: [0.8, 1.6, -1.6], rotY: -0.15 },
+];
+
+export function SpatialGyroView({ theme, documents }: SpatialGyroViewProps) {
   const colors = THEME[theme];
   const isLight = theme === "light";
 
@@ -19,6 +30,17 @@ export function SpatialGyroView({ theme, onSelectDocument }: SpatialGyroViewProp
   const [stereoMode, setStereoMode] = useState(false);
 
   const rotationRef = useRef({ alpha: 0, beta: 0, gamma: 0 });
+  // The GL render loop is created once per scene, so it reads the toggles through refs
+  const gyroActiveRef = useRef(gyroActive);
+  const stereoModeRef = useRef(stereoMode);
+  gyroActiveRef.current = gyroActive;
+  stereoModeRef.current = stereoMode;
+  const stopRenderRef = useRef<(() => void) | null>(null);
+
+  const shownDocs = documents.slice(0, SLAB_SLOTS.length);
+  // Rebuild the scene when the shown documents change (and stop the old render loop)
+  const sceneKey = `${theme}:${shownDocs.map((d) => d.id).join(",")}`;
+  useEffect(() => () => stopRenderRef.current?.(), [sceneKey]);
 
   // Subscribe to DeviceMotion sensors for mobile gyroscope head-tracking
   useEffect(() => {
@@ -100,12 +122,11 @@ export function SpatialGyroView({ theme, onSelectDocument }: SpatialGyroViewProp
     const slabEdgesGeo = new THREE.EdgesGeometry(slabGeo);
     const slabs: THREE.Mesh[] = [];
 
-    const docConfigs = [
-      { title: "ATO Notice FY24", pos: [-1.6, 1.3, -0.6], rotY: 0.35 },
-      { title: "Macquarie Wrap", pos: [1.6, 1.3, -0.6], rotY: -0.35 },
-      { title: "AustralianSuper", pos: [-0.8, 1.6, -1.6], rotY: 0.15 },
-      { title: "Smith Trust Deed", pos: [0.8, 1.6, -1.6], rotY: -0.15 },
-    ];
+    const docConfigs = shownDocs.map((doc, i) => ({
+      documentId: doc.id,
+      title: doc.original_name || doc.filename,
+      ...SLAB_SLOTS[i],
+    }));
 
     docConfigs.forEach((cfg) => {
       const slabMat = new THREE.MeshStandardMaterial({
@@ -117,7 +138,7 @@ export function SpatialGyroView({ theme, onSelectDocument }: SpatialGyroViewProp
       const slab = new THREE.Mesh(slabGeo, slabMat);
       slab.position.set(cfg.pos[0], cfg.pos[1], cfg.pos[2]);
       slab.rotation.y = cfg.rotY;
-      slab.userData = { title: cfg.title, originalY: cfg.pos[1] };
+      slab.userData = { documentId: cfg.documentId, title: cfg.title, originalY: cfg.pos[1] };
 
       // Wireframe edge
       const edgeMat = new THREE.LineBasicMaterial({
@@ -155,8 +176,15 @@ export function SpatialGyroView({ theme, onSelectDocument }: SpatialGyroViewProp
     // Render loop
     const clock = new THREE.Clock();
     let animFrame: number;
+    let stopped = false;
+    stopRenderRef.current?.();
+    stopRenderRef.current = () => {
+      stopped = true;
+      cancelAnimationFrame(animFrame);
+    };
 
     const render = () => {
+      if (stopped) return;
       animFrame = requestAnimationFrame(render);
       const time = clock.getElapsedTime();
 
@@ -170,7 +198,7 @@ export function SpatialGyroView({ theme, onSelectDocument }: SpatialGyroViewProp
       });
 
       // Apply Gyroscope orientation if active
-      if (gyroActive) {
+      if (gyroActiveRef.current) {
         const { alpha, beta, gamma } = rotationRef.current;
         const euler = new THREE.Euler(beta, alpha, -gamma, "YXZ");
         camera.quaternion.setFromEuler(euler);
@@ -178,7 +206,7 @@ export function SpatialGyroView({ theme, onSelectDocument }: SpatialGyroViewProp
         cameraRight.quaternion.setFromEuler(euler);
       }
 
-      if (stereoMode) {
+      if (stereoModeRef.current) {
         // Split screen Cardboard rendering
         renderer.setScissorTest(true);
 
@@ -202,7 +230,15 @@ export function SpatialGyroView({ theme, onSelectDocument }: SpatialGyroViewProp
 
   return (
     <View style={styles.container}>
-      <GLView style={styles.glView} onContextCreate={onContextCreate} />
+      <GLView key={sceneKey} style={styles.glView} onContextCreate={onContextCreate} />
+
+      {shownDocs.length === 0 && (
+        <View style={styles.emptyState} pointerEvents="none">
+          <Text style={[styles.emptyText, { color: colors.textMuted }]}>
+            No documents in this vault yet. Uploaded documents appear here.
+          </Text>
+        </View>
+      )}
 
       {/* Center line for Cardboard stereo mode */}
       {stereoMode && <View style={[styles.stereoDivider, { backgroundColor: colors.accent }]} />}
@@ -254,6 +290,18 @@ const styles = StyleSheet.create({
   },
   glView: {
     flex: 1,
+  },
+  emptyState: {
+    position: "absolute",
+    left: 24,
+    right: 24,
+    bottom: 160,
+    alignItems: "center",
+    zIndex: 15,
+  },
+  emptyText: {
+    fontSize: 13,
+    textAlign: "center",
   },
   stereoDivider: {
     position: "absolute",

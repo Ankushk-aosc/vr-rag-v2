@@ -18,6 +18,15 @@ def is_dev_environment(environment: Optional[str]) -> bool:
 # explicit opt-in to the disclosed cloud data flows.
 PRIVACY_MODES = ("local", "cloud")
 
+# Relative data paths resolve against apps/api, not the process working directory, so the API, scripts and
+# tests started from any folder share one database and uploads directory (Audit I-19)
+API_ROOT = Path(__file__).resolve().parents[1]
+
+
+def resolve_data_path(value: str) -> str:
+    path = Path(value).expanduser()
+    return str(path if path.is_absolute() else API_ROOT / path)
+
 
 def is_private_endpoint(url: str) -> bool:
     """True when url points at this machine or a private network (loopback, RFC 1918, link-local,
@@ -83,6 +92,12 @@ class Settings(BaseSettings):
                 "PRIVACY_MODE=local requires LOCAL_LLM_BASE_URL to point at this machine or a private "
                 f"network, got '{self.LOCAL_LLM_BASE_URL}'. Set PRIVACY_MODE=cloud to use a hosted LLM."
             )
+        return self
+
+    @model_validator(mode="after")
+    def anchor_data_paths(self) -> "Settings":
+        self.SQLITE_DB_PATH = resolve_data_path(self.SQLITE_DB_PATH)
+        self.UPLOADS_DIR = resolve_data_path(self.UPLOADS_DIR)
         return self
 
     @model_validator(mode="after")

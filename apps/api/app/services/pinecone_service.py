@@ -405,10 +405,10 @@ _doc_name_cache: Dict[str, str] = {}
 _doc_name_cache_at = 0.0
 
 
-def get_document_names(family_entity_id: Optional[str] = None, force: bool = False) -> Dict[str, str]:
+def get_document_names(family_entity_id: str, force: bool = False) -> Dict[str, str]:
     """
-    Retrieves document_id -> original filename mapping from transactional system of record.
-    Prevents truncation and cross-tenant leakage.
+    Retrieves one family's document_id -> original filename mapping from the transactional system of record.
+    The family is required: there is no cross-tenant name map (Audit I-20).
     """
     from app.db import sqlite
     try:

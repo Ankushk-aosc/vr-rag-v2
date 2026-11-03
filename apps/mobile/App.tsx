@@ -200,18 +200,7 @@ export default function App() {
       {/* Main View Area: Spatial 3D Gyro Room OR Grounded Chat */}
       <View style={styles.mainView}>
         {activeView === "spatial" ? (
-          <SpatialGyroView
-            theme={theme}
-            onSelectDocument={(docTitle) => {
-              setSelectedCitation({
-                chunk_id: `chunk_${docTitle.toLowerCase().replace(/\s+/g, "_")}`,
-                document_id: "doc_preview",
-                document_name: docTitle,
-                page_number: 1,
-                snippet: `Verified Australian financial evidence excerpt from ${docTitle}. Grounded strictly in local encrypted storage with APP 8 compliance.`,
-              });
-            }}
-          />
+          <SpatialGyroView theme={theme} documents={documents} />
         ) : (
           <ChatHUD
             messages={messages}

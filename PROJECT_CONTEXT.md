@@ -48,15 +48,14 @@ VR-RAG/
 │   │   └── requirements.txt # INCOMPLETE (see §11)
 │   ├── web/                 # Next.js 14.2 (App Router, single page) + Three.js/R3F + WebXR
 │   └── mobile/              # Expo SDK 58 / React Native 0.88 client
-├── docs/                    # POC.md, runbook.md (partly stale), AUDIT_REMEDIATION_FEATURES.md
+├── docs/                    # POC.md, runbook.md (current, I-21), AUDIT_REMEDIATION_FEATURES.md (historical Oct-2026 report)
 ├── docker-compose.yml       # postgres + api + web (I-17); docker/postgres/init-app-role.sh; .env.example
 ├── VR-RAG_AI_Agent_Remediation_Master_Plan.md   # 58-item remediation contract (authoritative)
 ├── PROJECT_CONTEXT.md       # this file
 └── AGENT_MEMORY.md          # running memory: decisions, issues, tasks
 ```
 
-`packages/contracts/` is listed in README but **does not exist**. Neither does `.env.example`
-(deleted in `7f5b71e`).
+There is no `packages/` directory; the README no longer lists one (I-21). `.env.example` was re-added in I-17.
 
 ## 3. Runtime topology
 
@@ -99,8 +98,8 @@ Mobile (Expo :8081)  ─┼─► FastAPI (:8000)
   STT option in local mode. Fonts are self-hosted via `next/font/google` in `app/layout.tsx` (`--font-inter-self`,
   `--font-mono-self`). Static checks: `apps/api/tests/test_web_client_privacy.py`.
 
-Paths such as `data/app.db` and `data/uploads` are **relative to the process CWD**. Running
-uvicorn from `apps/api` uses `apps/api/data/`, not the repo-root `data/`. Both directories exist locally.
+Relative data paths (`data/app.db`, `data/uploads`) resolve against `apps/api` whatever the CWD (I-19), so local
+data lives in `apps/api/data/`. The repo-root `data/` is an older, unused copy (user's to keep or delete).
 
 ## 4. Backend: request flows
 
@@ -365,9 +364,9 @@ APIs: always use `npx expo install` and check the versioned docs. It recommends 
 | Claim (where) | Reality |
 |---|---|
 | Pinecone stores only anonymised vectors + IDs (.agents AU rules) | Resolved by I-09: local mode (default) uses no Pinecone. In opt-in cloud mode full chunk text + filename still go to Pinecone metadata (README discloses this) |
-| "85/85 tests passing" (AUDIT doc) | 146 tests now; see the AGENT_MEMORY baseline |
-| `packages/contracts`, `.env.example` (README) | `.env.example` added (I-17); `packages/contracts` still missing |
-| Runbook: Ollama local LLM, `d:\VR-RAG` paths | Local mode now uses the `local` LLM provider (Ollama by default). `d:\VR-RAG` paths are still wrong |
+| "85/85 tests passing" (AUDIT doc) | Fixed (I-21): labelled an October 2026 snapshot; CI is the source of truth |
+| `packages/contracts`, `.env.example` (README) | Fixed: `.env.example` added (I-17); README no longer lists `packages/` (I-21) |
+| Runbook: Ollama local LLM, `d:\VR-RAG` paths | Fixed (I-21): runbook rewritten for PRIVACY_MODE, `LOCAL_LLM_*`, repo-relative paths, Docker, CI checks and the real VR launcher labels |
 | Health: "Pinecone Cloud Serverless (Zero Local Storage)" | Fixed (I-09): `/api/health` reports `privacy_mode` and `data_leaves_deployment` truthfully |
 | Docker compose builds api/web | Fixed (I-17): Dockerfiles exist, secrets come from `.env`, the API uses a non-superuser role so RLS applies |
 | Phase 1 docs say "client-supplied tenancy rejected" | Client supplies `family_entity_id`; the server validates membership (acceptable) |

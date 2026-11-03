@@ -373,17 +373,35 @@ class SqlAlchemyDocumentRepository(BaseDocumentRepository):
             docs = session.scalars(stmt).all()
             return [_doc_to_dict(d) for d in docs]
 
+    def get_lexical_chunks(self) -> List[Dict[str, Any]]:
+        with get_db_session(system=True) as session:  # keyword-index rebuild, partitioned by tenant (Audit I-28)
+            stmt = (
+                select(
+                    DocumentChunkModel.id, DocumentChunkModel.document_id, DocumentChunkModel.page_number,
+                    DocumentChunkModel.is_table, DocumentChunkModel.content, DocumentModel.family_entity_id,
+                    DocumentModel.original_name, DocumentAclModel.allowed_role,
+                )
+                .join(DocumentModel, DocumentChunkModel.document_id == DocumentModel.id)
+                .outerjoin(
+                    DocumentAclModel,
+                    (DocumentAclModel.document_id == DocumentChunkModel.document_id)
+                    & (DocumentAclModel.family_entity_id == DocumentModel.family_entity_id),
+                )
+            )
+            return [dict(row._mapping) for row in session.execute(stmt).all()]
+
     def get_document_by_id(self, doc_id: str) -> Optional[Dict[str, Any]]:
         with get_db_session(system=True) as session:  # id lookup, authorized by the caller (Audit I-16)
             doc = session.get(DocumentModel, doc_id)
             return _doc_to_dict(doc) if doc else None
 
-    def get_document_names(self, family_entity_id: Optional[str] = None) -> Dict[str, str]:
-        family_ids = [family_entity_id] if family_entity_id else None
-        with get_db_session(family_ids=family_ids) as session:
-            stmt = select(DocumentModel.id, DocumentModel.original_name, DocumentModel.filename)
-            if family_entity_id:
-                stmt = stmt.where(DocumentModel.family_entity_id == family_entity_id)
+    def get_document_names(self, family_entity_id: str) -> Dict[str, str]:
+        if not family_entity_id:
+            return {}  # never a cross-tenant name map (Audit I-20)
+        with get_db_session(family_ids=[family_entity_id]) as session:
+            stmt = select(DocumentModel.id, DocumentModel.original_name, DocumentModel.filename).where(
+                DocumentModel.family_entity_id == family_entity_id
+            )
             rows = session.execute(stmt).all()
             return {
                 doc_id: (orig_name or filename)

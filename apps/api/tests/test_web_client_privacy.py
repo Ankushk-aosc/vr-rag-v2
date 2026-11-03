@@ -24,6 +24,14 @@ def _function_body(src: str, signature: str) -> str:
     raise AssertionError(f"unterminated body for {signature}")
 
 
+# The voice engine class is split across these files (Audit I-22); the privacy checks cover all of them
+VOICE_ENGINE_FILES = ("voiceConfig.ts", "VoiceEngineCore.ts", "VoiceRecognition.ts", "VoiceEngine.ts")
+
+
+def _voice_engine() -> str:
+    return "\n".join(_read(f"lib/voice/{name}") for name in VOICE_ENGINE_FILES)
+
+
 def test_privacy_mode_defaults_to_locked():
     store = _read("lib/voice/voiceStore.ts")
     assert 'privacyMode: "unknown"' in store
@@ -31,8 +39,8 @@ def test_privacy_mode_defaults_to_locked():
 
 
 def test_browser_recognition_is_gated_at_the_single_chokepoint():
-    engine = _read("lib/voice/VoiceEngine.ts")
-    body = _function_body(engine, "function getRecognitionCtor()")
+    engine = _voice_engine()
+    body = _function_body(engine, "export function getRecognitionCtor()")
     assert "if (!cloudSpeechAllowed()) return null;" in body
     # Nothing may construct a recogniser except through getRecognitionCtor
     outside = engine.replace(body, "")
@@ -41,7 +49,7 @@ def test_browser_recognition_is_gated_at_the_single_chokepoint():
 
 
 def test_standby_and_wake_word_need_cloud_mode():
-    engine = _read("lib/voice/VoiceEngine.ts")
+    engine = _voice_engine()
     standby = _function_body(engine, "async startStandby(): Promise<void>")
     assert "if (!cloudSpeechAllowed())" in standby
     end = _function_body(engine, 'endConversation(reason = "user", forceStop = false): void')
@@ -54,8 +62,8 @@ def test_standby_and_wake_word_need_cloud_mode():
 
 
 def test_browser_tts_uses_only_on_device_voices_outside_cloud_mode():
-    engine = _read("lib/voice/VoiceEngine.ts")
-    body = _function_body(engine, "private speakWithBrowser(text: string, gen: number): Promise<void>")
+    engine = _voice_engine()
+    body = _function_body(engine, "protected speakWithBrowser(text: string, gen: number): Promise<void>")
     assert "cloudSpeechAllowed() || v.localService" in body
     assert body.index("if (!voice && !cloudSpeechAllowed())") < body.index("new SpeechSynthesisUtterance")
 

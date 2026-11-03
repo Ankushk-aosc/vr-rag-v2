@@ -17,13 +17,12 @@ A voice-first spatial financial intelligence pavilion for Australian family offi
 VR-RAG/
 ├── apps/
 │   ├── api/              # FastAPI Python backend (Ingestion, RAG, vector index, Voice)
+│   │   └── data/         # Local data: uploads/, app.db (SQLite), lexical/ (keyword index)
 │   ├── web/              # Next.js 14+ frontend with Three.js Spatial Pavilion
 │   └── mobile/           # Expo React Native mobile app with spatial gyroscope
-├── packages/
-│   └── contracts/        # Shared API data models and TypeScript schemas
-├── data/
-│   ├── uploads/          # Local staging for uploaded Australian financial documents
-│   └── app.db            # Local SQLite database (users, ACL, raw chunks, audit)
+├── docker/               # Postgres init script used by docker-compose.yml
+├── docs/                 # Runbook and remediation report
+├── docker-compose.yml    # PostgreSQL + API + web
 ├── .env.example          # Environment configuration template
 ├── .gitignore            # Git exclusions (credentials, .env, DB, node_modules)
 └── README.md
@@ -38,11 +37,11 @@ whether any data leaves the deployment (`data_leaves_deployment`).
 
 | Data | Where it is stored / processed |
 | --- | --- |
-| Original files | Local disk (`data/uploads`). `S3_BUCKET_NAME` is ignored. |
-| Users, ACLs, audit log, chunk text | App database (`data/app.db`, or your PostgreSQL via `DATABASE_URL`) |
+| Original files | Local disk (`apps/api/data/uploads`). `S3_BUCKET_NAME` is ignored. |
+| Users, ACLs, audit log, chunk text | App database (`apps/api/data/app.db`, or your PostgreSQL via `DATABASE_URL`) |
 | Embeddings | Computed on this machine (fastembed `all-MiniLM-L6-v2`), stored in `chunk_vectors` |
 | Document display metadata (columns, sample rows, preview) | App database (`document_meta`) |
-| Keyword index | Local disk (`data/lexical`) |
+| Keyword index | Local disk (`apps/api/data/lexical`) |
 | Questions + retrieved evidence | Your local OpenAI-compatible LLM server (`LOCAL_LLM_BASE_URL`, default Ollama at `http://127.0.0.1:11434/v1`, model `LOCAL_LLM_MODEL`) |
 | Voice audio (server side) | On-device faster-whisper; answers spoken with the on-device TTS engine |
 | Scanned documents | Tesseract on this machine. `OCR_ENGINE=textract` is ignored. |
@@ -85,6 +84,9 @@ Agreements with each provider in accordance with APP 8.
 2. Run backend: `python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload` in `apps/api`.
 3. Run web frontend: `npm run dev` in `apps/web`.
 4. Run mobile app: `npx expo start` in `apps/mobile`.
+
+Relative `SQLITE_DB_PATH` and `UPLOADS_DIR` values resolve against `apps/api`, whichever folder the API or a
+script is started from (default `apps/api/data/`). Use an absolute path to keep data elsewhere.
 
 ### Docker
 `docker compose up --build` starts PostgreSQL, the API (port 8000) and the web app (port 3000).

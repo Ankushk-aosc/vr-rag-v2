@@ -246,8 +246,9 @@ def _pack_evidence(passages: List[Dict[str, Any]], dates: List[str], budget: int
     return packed
 
 
-def _citations_for(passages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    names = pinecone_service.get_document_names()
+def _citations_for(passages: List[Dict[str, Any]], family_entity_id: str) -> List[Dict[str, Any]]:
+    # Names come only from the asking family's documents (Audit I-20)
+    names = pinecone_service.get_document_names(family_entity_id=family_entity_id)
     citations = []
     for i, p in enumerate(passages, start=1):
         doc_id = p.get("document_id", "")
@@ -428,7 +429,7 @@ async def stream_rag_events(
     t2 = time.perf_counter()
     yield _stage("rank", "Ranking evidence", "active")
     passages = _pack_evidence(_fuse(semantic, lexical, dates, top_k), dates, EVIDENCE_CHAR_BUDGET)
-    citations = await asyncio.to_thread(_citations_for, passages)
+    citations = await asyncio.to_thread(_citations_for, passages, family_entity_id)
     if citations:
         top = ", ".join(sorted({c["document_name"] for c in citations}))[:160]
         detail = f"Selected {len(citations)} passages from {top}"

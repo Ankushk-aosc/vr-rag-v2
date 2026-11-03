@@ -144,7 +144,7 @@ def iter_markdown_tables(text: str):
 
 
 def build_datasets(chunks: List[Dict]) -> List[Dataset]:
-    names = pinecone_service.get_document_names()
+    names_by_family: Dict[str, Dict[str, str]] = {}  # name lookups stay within each family (Audit I-20)
     groups: Dict[Tuple[str, Tuple[str, ...]], Dict] = {}
     for c in chunks:
         text = c.get("text", "")
@@ -250,7 +250,9 @@ def build_datasets(chunks: List[Dict]) -> List[Dataset]:
 
         if not columns:
             continue
-        name = names.get(doc_id) or g["name"] or "Indexed table"
+        if g["family"] not in names_by_family:
+            names_by_family[g["family"]] = pinecone_service.get_document_names(family_entity_id=g["family"])
+        name = names_by_family[g["family"]].get(doc_id) or g["name"] or "Indexed table"
         datasets.append(Dataset(
             id=hashlib.sha1(f"{doc_id}|{'|'.join(header)}".encode()).hexdigest()[:10],
             document_id=doc_id,

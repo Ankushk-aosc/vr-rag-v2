@@ -323,42 +323,35 @@ class LexicalIndex:
                 total_loaded += len(chunks)
             except Exception as e:
                 logger.warning(f"Failed to load lexical cache {cache_file}: {e}")
-            return total_loaded
+        return total_loaded  # after every tenant's cache, not just the first (Audit I-28)
 
-    def _load_from_sqlite(self) -> None:
+    def _load_from_database(self) -> None:
+        """Rebuild from the system of record: SQLite, or PostgreSQL when DATABASE_URL is set (Audit I-28)."""
         try:
             from app.db import sqlite
-            with sqlite.get_db_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT c.id, c.document_id, c.page_number, c.is_table, c.content, d.family_entity_id, d.original_name, a.allowed_role
-                    FROM document_chunks c
-                    JOIN documents d ON c.document_id = d.id
-                    LEFT JOIN document_acl a ON c.document_id = a.document_id AND d.family_entity_id = a.family_entity_id
-                """)
-                rows = cursor.fetchall()
-                chunks = []
-                for r in rows:
-                    role = r["allowed_role"] or "family_member"
-                    allowed = ["family_admin"] if role == "family_admin" else ["family_admin", "family_member"]
-                    chunks.append({
-                        "chunk_id": r["id"],
-                        "document_id": r["document_id"],
-                        "page_number": int(r["page_number"] or 1),
-                        "is_table": bool(r["is_table"]),
-                        "family_entity_id": r["family_entity_id"],
-                        "allowed_roles": allowed,
-                        "original_name": r["original_name"] or "",
-                        "text": r["content"] or "",
-                    })
-                if chunks:
-                    self.load_chunks(chunks)
-                    for tenant_id in self._partitions:
-                        self._save_tenant_cache(tenant_id)
-                    logger.info("Partitioned lexical index built from SQLite with %d chunks across %d tenants", len(chunks), len(self._partitions))
-                self.ready = True
+            rows = sqlite.get_lexical_chunks()
+            chunks = []
+            for r in rows:
+                role = r["allowed_role"] or "family_member"
+                allowed = ["family_admin"] if role == "family_admin" else ["family_admin", "family_member"]
+                chunks.append({
+                    "chunk_id": r["id"],
+                    "document_id": r["document_id"],
+                    "page_number": int(r["page_number"] or 1),
+                    "is_table": bool(r["is_table"]),
+                    "family_entity_id": r["family_entity_id"],
+                    "allowed_roles": allowed,
+                    "original_name": r["original_name"] or "",
+                    "text": r["content"] or "",
+                })
+            if chunks:
+                self.load_chunks(chunks)
+                for tenant_id in self._partitions:
+                    self._save_tenant_cache(tenant_id)
+                logger.info("Partitioned lexical index built from the database with %d chunks across %d tenants", len(chunks), len(self._partitions))
+            self.ready = True
         except Exception as e:
-            logger.warning("Could not build lexical index from SQLite: %s", e)
+            logger.warning("Could not build lexical index from the database: %s", e)
             self.ready = True
 
     def build_from_pinecone(self) -> None:
@@ -372,16 +365,16 @@ class LexicalIndex:
                 self.ready = True
                 logger.info("Loaded %d partitioned lexical chunks from disk caches.", cached_chunks)
 
-            # If Pinecone is not configured, load from SQLite system of record directly
+            # If Pinecone is not configured, load from the database system of record directly
             if not pinecone_service.get_pinecone_client():
-                self._load_from_sqlite()
+                self._load_from_database()
                 return
 
             try:
                 index = pinecone_service.get_index()
             except Exception as e:
                 logger.info("Pinecone index unavailable (%s); falling back to SQLite for lexical index.", e)
-                self._load_from_sqlite()
+                self._load_from_database()
                 return
             ids: List[str] = []
             for page in index.list(limit=100):
