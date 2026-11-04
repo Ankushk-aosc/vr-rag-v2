@@ -87,7 +87,14 @@ async def client_log(
 @router.get("/status")
 async def voice_status(current_user: Dict[str, Any] = Depends(auth.get_current_user)):
     """Voice service health and status behind authenticated session (Audit S15)."""
-    return {"stt": voice.stt_status(), "tts_voice": settings.TTS_VOICE}
+    return {"stt": voice.stt_status(), "tts_voice": voice.default_voice_id(), "tts_provider": voice.voice_provider()}
+
+
+@router.get("/voices")
+async def list_voices(current_user: Dict[str, Any] = Depends(auth.get_current_user)):
+    """Assistant voices this deployment allows (VOICE_OPTIONS), for the Settings picker."""
+    return {"provider": voice.voice_provider(), "default": voice.default_voice_id(), "voices": voice.voice_options(),
+            "model": settings.VOICE_MODEL or None}
 
 
 @router.post(
@@ -112,6 +119,8 @@ async def synthesize_text(
     req: SynthesizeRequest,
     current_user: Dict[str, Any] = Depends(auth.get_current_user)
 ):
+    if req.voice and req.voice not in voice.voice_options():
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Unsupported voice.")
     try:
         audio_bytes = await voice.synthesize_speech(req.text, req.voice)
     except Exception as e:

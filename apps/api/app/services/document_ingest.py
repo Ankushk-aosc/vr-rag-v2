@@ -18,7 +18,7 @@ from app.config import settings
 from app.db import sqlite
 from app.db.repositories.base import DuplicateDocumentError
 from app.schemas.document import DocumentResponse, DocumentUploadResponse
-from app.services import chunker, embeddings, extractor, pinecone_service, vector_index
+from app.services import chunker, embeddings, extractor, pdf_visual, pinecone_service, vector_index
 from app.services.lexical_index import lexical_index
 from app.services.safe_errors import log_with_reference, safe_message
 from app.services.storage import storage_service
@@ -47,6 +47,15 @@ ALLOWED_MIME_TYPES = {
 }
 
 MAX_FILE_SIZE = settings.MAX_FILE_SIZE_MB * 1024 * 1024
+
+
+def _visual_meta(summary: Optional[Dict[str, Any]], doc_id: str) -> Optional[Dict[str, Any]]:
+    """Counts plus page-cited metrics from visual analysis, kept with the document's display metadata."""
+    if not summary:
+        return None
+    meta = {k: v for k, v in summary.items() if k != "metrics"}
+    meta["metrics"] = [{"document_id": doc_id, **m} for m in summary.get("metrics", [])][:500]
+    return meta
 
 
 async def process_single_upload(
@@ -144,6 +153,12 @@ async def process_single_upload(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=safe_message("Could not read this document. It may be damaged or in an unsupported layout.", ref),
             )
+
+        # 3b. Charts, plots and image-only pages carry information the text layer does not. This runs on
+        # the caller's own, already-authorized upload; results become part of each page's text.
+        visual_summary = None
+        if file_ext == ".pdf":
+            visual_summary = await pdf_visual.enrich_pages(tmp_path, pages)
     finally:
         try:
             tmp_file.close()
@@ -232,7 +247,8 @@ async def process_single_upload(
         "preview_text": extracted_preview_text,
         "is_table": is_table_doc or file_ext in [".csv", ".xlsx", ".xls"],
         "low_confidence": is_low_conf,
-        "ocr_confidence": avg_conf
+        "ocr_confidence": avg_conf,
+        "visual_extraction": _visual_meta(visual_summary, doc_id),
     }
     try:
         sqlite.insert_document(doc_record)

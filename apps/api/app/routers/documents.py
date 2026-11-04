@@ -270,6 +270,22 @@ async def get_document_table(
     )
 
 
+@router.post("/{document_id}/visual-extract")
+async def visual_extract_document(
+    document_id: str,
+    current_user: Dict[str, Any] = Depends(auth.get_current_user)
+):
+    """
+    Re-analyse a stored PDF's charts, plots and image pages with the configured vision model.
+    Authorization (RBAC document.upload AND ABAC: same family, classification within clearance) runs
+    first; the stored file is not read and no model is called for a caller who fails it.
+    """
+    from app.services.visual_reprocess import reprocess_document_visuals
+
+    subject, doc = authorization.authorize_document(current_user, document_id, authorization.DOCUMENT_UPLOAD)
+    return await reprocess_document_visuals(doc, subject.user_id)
+
+
 @router.delete("/{document_id}")
 async def delete_document(
     document_id: str,

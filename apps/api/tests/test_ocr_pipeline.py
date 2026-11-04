@@ -24,6 +24,12 @@ from app.services.storage import storage_service
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "ocr"
 
+# These tests need real OCR output. Without the Tesseract binary there is no honest text to assert on
+# (the engine no longer substitutes canned sample text); CI and the API image install it.
+import shutil as _shutil
+requires_tesseract = pytest.mark.skipif(_shutil.which("tesseract") is None,
+                                        reason="Tesseract OCR binary not installed (CI and Docker install it)")
+
 
 @pytest.fixture(autouse=True)
 def setup_test_db():
@@ -112,6 +118,7 @@ def test_routing_mixed_pdf():
     assert p2.is_scanned is True
 
 
+@requires_tesseract
 def test_chunk_metadata_includes_page_no_and_ocr_metadata():
     """2.5: Chunk document carries page_no, bbox, ocr_engine, ocr_confidence."""
     scanned_pdf = FIXTURES_DIR / "scanned_statement.pdf"
@@ -182,6 +189,7 @@ def test_textract_engine_mocked_no_live_aws_keys():
     assert page.blocks[0]["confidence"] == pytest.approx(0.985, abs=0.01)
 
 
+@requires_tesseract
 def test_ingestion_scanned_image_and_digital_pdf_pipeline():
     """GATE: scanned + digital fixtures both ingest correctly; page_no metadata stored."""
     client = TestClient(app)
@@ -234,6 +242,7 @@ def test_ingestion_scanned_image_and_digital_pdf_pipeline():
     assert "ocr_confidence" in scanned_chunks[0]
 
 
+@requires_tesseract
 def test_failure_compensation_leaves_no_orphans():
     """2.5, 2.9: Ingestion failure leaves status='failed' and cleans up vectors and storage."""
     client = TestClient(app)
@@ -255,6 +264,7 @@ def test_failure_compensation_leaves_no_orphans():
     assert "Vector database upsert failed" in res.json()["detail"]
 
 
+@requires_tesseract
 def test_acl_and_tenant_isolation_on_ocr_content():
     """2.8, 2.9: OCR text obeys the same authorize_document and ACL rules."""
     client = TestClient(app)

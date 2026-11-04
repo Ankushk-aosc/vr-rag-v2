@@ -28,7 +28,7 @@ _cache: Dict[str, Tuple[float, List[Dict[str, Any]], Optional[np.ndarray]]] = {}
 _cache_lock = threading.Lock()
 
 # Display metadata kept per document (everything else comes from the SQL documents row)
-DISPLAY_META_FIELDS = ("columns", "sample_rows", "preview_text", "is_table", "low_confidence", "ocr_confidence")
+DISPLAY_META_FIELDS = ("columns", "sample_rows", "preview_text", "is_table", "low_confidence", "ocr_confidence", "visual_extraction")
 
 
 def _invalidate(family_entity_id: str) -> None:

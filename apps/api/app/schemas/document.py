@@ -18,6 +18,8 @@ class DocumentResponse(BaseModel):
     sample_rows: Optional[List[List[str]]] = None
     preview_text: Optional[str] = None
     is_table: bool = False
+    # Counts and page-cited metrics from visual analysis of chart/image pages (PDFs)
+    visual_extraction: Optional[dict] = None
 
 
 class DocumentUploadResponse(BaseModel):

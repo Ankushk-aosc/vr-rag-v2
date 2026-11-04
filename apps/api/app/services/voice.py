@@ -294,10 +294,30 @@ def synthesize_speech_pyttsx3(text: str) -> bytes:
                 pass
 
 
+def voice_options() -> list:
+    """Voices a user may pick (VOICE_OPTIONS); the configured default is always included."""
+    options = [v.strip() for v in (settings.VOICE_OPTIONS or "").split(",") if v.strip()]
+    default = default_voice_id()
+    return options if default in options else [default] + options
+
+
+def default_voice_id() -> str:
+    return settings.VOICE_ID or settings.TTS_VOICE or DEFAULT_AUSTRALIAN_VOICE
+
+
+def voice_provider() -> str:
+    """auto: on-device in local privacy mode, edge-tts otherwise. edge is never used in local mode."""
+    provider = (settings.VOICE_PROVIDER or "auto").lower()
+    if settings.is_local_mode or provider == "local":
+        return "local"
+    return "edge"
+
+
 async def synthesize_speech(text: str, voice: Optional[str] = None) -> bytes:
-    """Synthesize speech with Australian English neural voice, falling back to local Windows SAPI5.
-    In local privacy mode only the on-device engine is used: edge-tts sends the answer text to Microsoft."""
-    if settings.is_local_mode:
+    """Synthesize speech with the configured provider and voice (VOICE_PROVIDER / VOICE_ID), falling back
+    to the on-device engine. In local privacy mode only the on-device engine is used: edge-tts sends the
+    answer text to Microsoft."""
+    if voice_provider() == "local":
         try:
             return await asyncio.to_thread(synthesize_speech_pyttsx3, text)
         except Exception as e:
@@ -306,7 +326,7 @@ async def synthesize_speech(text: str, voice: Optional[str] = None) -> bytes:
     try:
         # edge-tts talks to a Microsoft websocket; never let a stalled connection hang the request
         audio = await asyncio.wait_for(
-            synthesize_speech_edge(text, voice or settings.TTS_VOICE or DEFAULT_AUSTRALIAN_VOICE), timeout=15
+            synthesize_speech_edge(text, voice or default_voice_id()), timeout=15
         )
         if audio and len(audio) > 100:
             return audio

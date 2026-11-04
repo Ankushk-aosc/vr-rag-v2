@@ -77,8 +77,18 @@ export abstract class VoiceEngineCore {
         // Wake word is opt-in: it keeps the mic open and needs browser (possibly third-party) recognition
         wakeWordEnabled: this.settingsExplicit.wakeWordEnabled ?? false,
         browserSpeechOptIn: this.settingsExplicit.browserSpeechOptIn ?? false,
+        ttsVoice: this.settingsExplicit.ttsVoice ?? null,
       });
+      this.ttsVoice = this.settingsExplicit.ttsVoice || undefined;
     }
+  }
+
+  /** Persisted assistant voice; null returns to the server's configured default (VOICE_ID). */
+  setTtsVoice(voice: string | null) {
+    this.ttsVoice = voice || undefined;
+    this.settingsExplicit = { ...this.settingsExplicit, ttsVoice: voice || undefined };
+    writeSettings(this.settingsExplicit);
+    voiceStore.set({ ttsVoice: voice });
   }
 
   get phase() {

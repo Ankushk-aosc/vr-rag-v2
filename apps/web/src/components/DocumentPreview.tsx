@@ -1,20 +1,32 @@
 "use client";
 
-import React, { useEffect, useRef } from "react";
-import { X } from "lucide-react";
+import React, { useEffect, useRef, useState } from "react";
+import { X, Loader2 } from "lucide-react";
 import { DocumentRecord } from "../types";
 import { fileExtension, formatBytes, formatDateTime } from "../lib/format";
+import { analyseDocumentVisuals } from "../lib/api";
+import { friendlyError } from "../lib/apiErrors";
 
 interface DocumentPreviewProps {
   document: DocumentRecord | null;
   onClose: () => void;
   onAsk?: (question: string) => void;
+  /** Shown only to roles that may modify documents; the server authorizes it again. */
+  canAnalyse?: boolean;
+  onAnalysed?: () => void;
   theme?: "dark" | "light";
 }
 
 /** Metadata and the extracted text preview the API stored for a document. Rendered as text only. */
-export function DocumentPreview({ document: doc, onClose, onAsk, theme = "light" }: DocumentPreviewProps) {
+export function DocumentPreview({ document: doc, onClose, onAsk, canAnalyse = false, onAnalysed, theme = "light" }: DocumentPreviewProps) {
   const panelRef = useRef<HTMLDivElement | null>(null);
+  const [analysing, setAnalysing] = useState(false);
+  const [analysis, setAnalysis] = useState<string | null>(null);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
+  useEffect(() => {
+    setAnalysis(null);
+    setAnalysisError(null);
+  }, [doc?.id]);
 
   useEffect(() => {
     if (!doc) return;
@@ -31,6 +43,7 @@ export function DocumentPreview({ document: doc, onClose, onAsk, theme = "light"
   if (!doc) return null;
   const isLight = theme === "light";
   const muted = isLight ? "text-slate-500" : "text-slate-400";
+  const isPdf = /\.pdf$/i.test(doc.original_name);
   const rows: [string, string][] = [
     ["Type", fileExtension(doc.original_name)],
     ["Pages", doc.total_pages ? String(doc.total_pages) : "—"],
@@ -79,6 +92,45 @@ export function DocumentPreview({ document: doc, onClose, onAsk, theme = "light"
             ))}
           </dl>
 
+          {(doc.visual_extraction || analysis || analysisError || (canAnalyse && isPdf)) && (
+            <div>
+              <div className={`text-[12px] font-semibold mb-1.5 ${muted}`}>Charts and images</div>
+              {analysis ? (
+                <p className="text-[13px]">{analysis}</p>
+              ) : doc.visual_extraction ? (
+                <p className="text-[13px]">{describeVisual(doc.visual_extraction)}</p>
+              ) : (
+                <p className={`text-[13px] ${muted}`}>Chart values in this PDF have not been read yet.</p>
+              )}
+              {analysisError && <p className="text-[13px] mt-1 text-rose-700">{analysisError}</p>}
+              {canAnalyse && isPdf && (
+                <button
+                  type="button"
+                  disabled={analysing}
+                  onClick={async () => {
+                    setAnalysing(true);
+                    setAnalysisError(null);
+                    try {
+                      const res = await analyseDocumentVisuals(doc.id);
+                      setAnalysis(describeVisual(res));
+                      onAnalysed?.();
+                    } catch (err) {
+                      setAnalysisError(friendlyError(err, "analyse this document").body);
+                    } finally {
+                      setAnalysing(false);
+                    }
+                  }}
+                  className={`mt-2 inline-flex items-center gap-1.5 h-8 px-3 rounded-md border text-[13px] font-medium disabled:opacity-60 ${
+                    isLight ? "border-slate-300 hover:bg-slate-50" : "border-slate-600 hover:bg-slate-800"
+                  }`}
+                >
+                  {analysing && <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden />}
+                  {analysing ? "Reading charts and images…" : "Analyse charts and images"}
+                </button>
+              )}
+            </div>
+          )}
+
           <div>
             <div className={`text-[12px] font-semibold mb-1.5 ${muted}`}>Extracted text (beginning)</div>
             {doc.preview_text ? (
@@ -112,4 +164,14 @@ export function DocumentPreview({ document: doc, onClose, onAsk, theme = "light"
       </div>
     </div>
   );
+}
+
+function describeVisual(v: { analysed: number; charts: number; readable_charts: number; unreadable_charts: number;
+  failed_pages: number[]; skipped_pages: number[] }): string {
+  if (!v.analysed && !v.failed_pages.length && !v.skipped_pages.length) return "No charts or image-only pages were found.";
+  const parts = [`${v.charts} chart${v.charts === 1 ? "" : "s"} found on ${v.analysed} page${v.analysed === 1 ? "" : "s"}`];
+  parts.push(`${v.readable_charts} with readable values, ${v.unreadable_charts} identified without readable values`);
+  if (v.failed_pages.length) parts.push(`could not analyse page${v.failed_pages.length === 1 ? "" : "s"} ${v.failed_pages.join(", ")}`);
+  if (v.skipped_pages.length) parts.push(`page${v.skipped_pages.length === 1 ? "" : "s"} ${v.skipped_pages.join(", ")} not analysed`);
+  return parts.join("; ") + ".";
 }

@@ -29,6 +29,8 @@ export interface VoiceSnapshot {
   /** Explicit client-side opt-in allowing browser SpeechRecognition even in local privacy mode. */
   serverAllowsBrowserSpeech: boolean;
   browserSpeechOptIn: boolean;
+  /** Assistant voice picked in Settings (null = server default). */
+  ttsVoice: string | null;
   /** Transient status/fallback message displayed in voice HUD (e.g. "Switching to Whisper..."). */
   statusText?: string;
 }
@@ -58,6 +60,7 @@ const initial: VoiceSnapshot = {
   privacyMode: "unknown",
   serverAllowsBrowserSpeech: true,
   browserSpeechOptIn: getInitialBrowserSpeechOptIn(),
+  ttsVoice: null,
   statusText: "",
 };
 

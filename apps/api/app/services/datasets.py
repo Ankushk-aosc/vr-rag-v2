@@ -43,6 +43,9 @@ class Dataset:
     allowed_roles: List[str] = field(default_factory=list)
     # column key -> source dates whose value was impossible (e.g. negative volume) and was dropped
     invalid: Dict[str, List[str]] = field(default_factory=dict)
+    # Provenance: the pages the rows came from, and whether they were read from a chart image
+    pages: List[int] = field(default_factory=list)
+    from_visual: bool = False
 
     def column(self, name: Optional[str]) -> Optional[Column]:
         """Find a column by its header, label or kind (case-insensitive, punctuation-insensitive)."""
@@ -162,7 +165,13 @@ def build_datasets(chunks: List[Dict]) -> List[Dataset]:
                 "family": c.get("family_entity_id", "default_family"),
                 "roles": set(c.get("allowed_roles") or []),
                 "name": c.get("original_name") or "",
+                "pages": set(),
+                "visual": False,
             })
+            if c.get("page_number"):
+                g["pages"].add(int(c["page_number"]))
+            if "read visually" in text or "read from the page image" in text:
+                g["visual"] = True
             for r in rows:
                 g["rows"].setdefault(tuple(r), r)
 
@@ -269,6 +278,8 @@ def build_datasets(chunks: List[Dict]) -> List[Dataset]:
             family_entity_id=g["family"],
             allowed_roles=sorted(g["roles"]),
             invalid=invalid,
+            pages=sorted(g["pages"]),
+            from_visual=g["visual"],
         ))
 
     # The same ledger is often indexed in several formats (csv, xlsx, docx...): keep the richest copy.

@@ -342,6 +342,7 @@ export default function SovereignPavilionApp() {
     onSetSttMode: (mode: "auto" | "server") => engineRef.current?.setSttMode(mode),
     onSetBrowserSpeechOptIn: (optIn: boolean) => engineRef.current?.setBrowserSpeechOptIn(optIn),
     onSetWakeWord: (on: boolean) => engineRef.current?.setWakeWordEnabled(on),
+    onSetVoice: (voice: string | null) => engineRef.current?.setTtsVoice(voice),
     onTestSpeaker: () => engineRef.current?.testSpeaker(),
   };
   const clearMessages = () => {
@@ -563,7 +564,8 @@ export default function SovereignPavilionApp() {
       />
 
       <CitationInspector citation={selectedCitation} onClose={closeCitation} theme={theme} />
-      <DocumentPreview document={previewDoc} onClose={closePreview} onAsk={handleSendMessage} theme={theme} />
+      <DocumentPreview document={previewDoc} onClose={closePreview} onAsk={handleSendMessage} theme={theme}
+        canAnalyse={role !== "read_only_adviser"} onAnalysed={loadDocuments} />
 
       <AppModals
         theme={theme}

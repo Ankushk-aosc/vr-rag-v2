@@ -39,6 +39,8 @@ export interface StoredSettings {
   sttMode?: "auto" | "server";
   wakeWordEnabled?: boolean;
   browserSpeechOptIn?: boolean;
+  /** Assistant voice chosen in Settings; must be one the server allows (GET /api/voice/voices). */
+  ttsVoice?: string;
 }
 
 export function readSettings(): StoredSettings {

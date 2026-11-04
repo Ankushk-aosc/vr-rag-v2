@@ -303,6 +303,14 @@ class SqlAlchemyDocumentRepository(BaseDocumentRepository):
         with get_db_session(system=True) as session:  # id lookup, authorized by the caller (Audit I-16)
             session.execute(update(DocumentModel).where(DocumentModel.id == document_id).values(classification=classification))
 
+    def delete_document_chunks(self, document_id: str, family_entity_id: str) -> int:
+        with get_db_session(family_ids=[family_entity_id]) as session:
+            owned = select(DocumentModel.id).where(
+                DocumentModel.id == document_id, DocumentModel.family_entity_id == family_entity_id
+            )
+            res = session.execute(delete(DocumentChunkModel).where(DocumentChunkModel.document_id.in_(owned)))
+            return res.rowcount or 0
+
     def get_authorized_document_ids(self, family_entity_id: str, classifications: List[str]) -> List[str]:
         if not family_entity_id or not classifications:
             return []

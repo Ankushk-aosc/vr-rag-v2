@@ -297,6 +297,16 @@ class SqliteDocumentRepository(BaseDocumentRepository):
             )
             conn.commit()
 
+    def delete_document_chunks(self, document_id: str, family_entity_id: str) -> int:
+        with get_db_connection() as conn:
+            cur = conn.execute(
+                "DELETE FROM document_chunks WHERE document_id = ? AND document_id IN "
+                "(SELECT id FROM documents WHERE family_entity_id = ?)",
+                (document_id, family_entity_id),
+            )
+            conn.commit()
+            return cur.rowcount or 0
+
     def get_chunks_by_ids(self, chunk_ids: List[str]) -> List[Dict[str, Any]]:
         if not chunk_ids:
             return []

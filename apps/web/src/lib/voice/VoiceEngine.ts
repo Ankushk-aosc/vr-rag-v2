@@ -21,6 +21,7 @@
  * during immersive WebXR sessions and in background tabs.
  */
 import { transcribeAudio } from "../api";
+import { describeTranscribeError } from "./dictation";
 import { rmsOf } from "../vad";
 import { canUseBrowserSpeech, liveLevels, voiceStore } from "./voiceStore";
 import { vlog } from "./voiceLog";
@@ -237,6 +238,9 @@ export class VoiceEngine extends VoiceRecognition {
         this.finishUtterance("max-length");
       }
       else if (!this.heardSpeech && !haveWords && sinceListen > NO_SPEECH_RESTART_MS) {
+        // Never loop silently: tell the user nothing was picked up, and how to send what was said
+        voiceStore.set({ statusText: "No speech detected yet. Keep talking, or press Done speaking to send." });
+        vlog("no-speech-restart", { ms: Math.round(sinceListen) });
         this.restartListening();
       }
     }
@@ -416,20 +420,27 @@ export class VoiceEngine extends VoiceRecognition {
     vlog("turn-end", { reason, stt: "server" });
     this.setPhase("transcribing");
     voiceStore.set({ statusText: "Transcribing…" });
+    const durationMs = Math.round(performance.now() - this.listenStartedAt);
     recorder.onstop = async () => {
       const blob = new Blob(this.recordedChunks, { type: recorder.mimeType || "audio/webm" });
       this.recordedChunks = [];
-      if (blob.size < 1500) return this.deliver("", gen);
+      // Safe diagnostics only: format, size and length. Never the audio or the words.
+      vlog("recording", { mimeType: blob.type, bytes: blob.size, durationMs });
+      if (blob.size < 1500) {
+        voiceStore.set({ statusText: "That recording was too short to transcribe. Please speak again." });
+        return this.deliver("", gen);
+      }
       try {
         this.abort = new AbortController();
         const started = performance.now();
         const text = await transcribeAudio(blob, this.abort.signal);
-        vlog("transcribed", { ms: Math.round(performance.now() - started), bytes: blob.size, text: text.slice(0, 80) });
+        vlog("transcribed", { ms: Math.round(performance.now() - started), bytes: blob.size, chars: text.length });
+        if (!text.trim()) voiceStore.set({ statusText: "No words were recognised. Please speak again." });
         this.deliver(text, gen);
       } catch (err: any) {
         if (err?.name === "AbortError") return;
-        vlog("transcribe-error", { error: String(err?.message || err).slice(0, 160) });
-        voiceStore.set({ error: err?.message || "Transcription failed." });
+        vlog("transcribe-error", { status: err?.status ?? null });
+        voiceStore.set({ error: describeTranscribeError(err) });
         this.deliver("", gen);
       }
     };

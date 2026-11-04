@@ -49,6 +49,14 @@ export interface DocumentRecord {
   sample_rows?: string[][];
   preview_text?: string;
   is_table?: boolean;
+  visual_extraction?: {
+    analysed: number;
+    charts: number;
+    readable_charts: number;
+    unreadable_charts: number;
+    failed_pages: number[];
+    skipped_pages: number[];
+  } | null;
 }
 
 export interface DocumentTableData {

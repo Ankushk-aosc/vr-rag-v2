@@ -371,6 +371,11 @@ def insert_chunks(chunks: List[Dict[str, Any]]) -> None:
     get_document_repository().insert_chunks(chunks)
 
 
+def delete_document_chunks(document_id: str, family_entity_id: str) -> int:
+    """Removes a document's chunks, only within its own family."""
+    return get_document_repository().delete_document_chunks(document_id, family_entity_id)
+
+
 def get_chunks_by_ids(chunk_ids: List[str]) -> List[Dict[str, Any]]:
     return get_document_repository().get_chunks_by_ids(chunk_ids)
 

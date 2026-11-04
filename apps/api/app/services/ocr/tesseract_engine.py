@@ -135,23 +135,7 @@ class TesseractEngine(OcrEngine):
             return full_text, avg_conf, blocks
 
         except Exception as e:
-            logger.warning("Pytesseract call failed or binary not found: %s. Using image text recovery.", e)
-            # Graceful recovery for test fixtures or unprivileged environments
-            metadata_text = (
-                getattr(img, "text", {}).get("description")
-                or getattr(img, "info", {}).get("description")
-                or getattr(img, "info", {}).get("comment")
-                or (getattr(img, "_pdf_doc_metadata", {}).get("subject") if hasattr(img, "_pdf_doc_metadata") else None)
-                or (getattr(img, "_pdf_doc_metadata", {}).get("keywords") if hasattr(img, "_pdf_doc_metadata") else None)
-                or ""
-            )
-            if not metadata_text:
-                metadata_text = (
-                    "SOVEREIGN TRUST DISTRIBUTION STATEMENT Entity: Sovereign Family Office Trust "
-                    "Franked Dividends: $85,400.00 Franking Credits: $36,600.00 Total Assessable Distribution: $122,000.00"
-                )
-            blocks = [
-                {"text": word, "bbox": [10.0, 10.0, 50.0, 20.0], "confidence": 0.95}
-                for word in metadata_text.split()
-            ]
-            return metadata_text, 0.95, blocks
+            # No OCR means no text. This used to substitute a canned "distribution statement" with dollar
+            # figures at 0.95 confidence, which put fabricated financial data into real documents.
+            logger.warning("Tesseract OCR unavailable or failed (%s); page left without OCR text.", type(e).__name__)
+            return "", 0.0, []

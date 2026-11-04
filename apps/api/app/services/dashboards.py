@@ -310,10 +310,15 @@ def resolve(plan: Dict, question: str, datasets: List[Dataset], plan_source: str
             "x_start": ds.x[lo],
             "x_end": ds.x[hi - 1],
             "columns": [c.label for c in ds.columns],
+            "document_id": ds.document_id,
+            "pages": ds.pages,
+            "from_visual": ds.from_visual,
         },
         "kpis": kpis,
         "charts": charts,
-        "notes": notes,
+        "notes": notes + ([f"Source page{'s' if len(ds.pages) > 1 else ''}: {', '.join(map(str, ds.pages))}."] if ds.pages else [])
+        + (["Values were read from chart images by a vision model and are approximate; check the cited pages."]
+           if ds.from_visual else []),
     }
 
 

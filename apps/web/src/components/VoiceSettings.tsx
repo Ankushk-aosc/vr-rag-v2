@@ -4,6 +4,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { Settings2, Volume2, AlertTriangle } from "lucide-react";
 import { canUseBrowserSpeech, useVoiceSnapshot, voiceStore } from "../lib/voice/voiceStore";
 import { readSettings, writeSettings } from "../lib/voice/voiceConfig";
+import { fetchVoiceOptions, VoiceOptions } from "../lib/api";
 import { LevelBars } from "./LevelBars";
 
 interface VoiceSettingsProps {
@@ -12,9 +13,16 @@ interface VoiceSettingsProps {
   onSetSttMode: (mode: "auto" | "server") => void;
   onSetBrowserSpeechOptIn?: (optIn: boolean) => void;
   onSetWakeWord?: (on: boolean) => void;
+  onSetVoice?: (voice: string | null) => void;
   onTestSpeaker: () => void;
   /** Which way the popover opens from the gear button. */
   placement?: "above" | "below";
+}
+
+/** "en-AU-NatashaNeural" -> "Natasha · en-AU" */
+function voiceLabel(id: string): string {
+  const m = /^([a-z]{2}-[A-Z]{2})-(.+?)(Neural)?$/.exec(id);
+  return m ? `${m[2]} · ${m[1]}` : id;
 }
 
 function browserRecognitionSupported(): boolean {
@@ -33,9 +41,11 @@ export function VoiceSettings({
   onSetSttMode,
   onSetBrowserSpeechOptIn,
   onSetWakeWord,
+  onSetVoice,
   onTestSpeaker,
   placement = "above",
 }: VoiceSettingsProps) {
+  const [voiceOptions, setVoiceOptions] = useState<VoiceOptions | null>(null);
   const [open, setOpen] = useState(false);
   const [showPrivacyNotice, setShowPrivacyNotice] = useState(false);
   const voice = useVoiceSnapshot();
@@ -55,6 +65,14 @@ export function VoiceSettings({
       writeSettings({ ...readSettings(), browserSpeechOptIn: optIn });
     }
   };
+
+  // Voices come from the server's allow-list, so changing the voice never needs a code change
+  useEffect(() => {
+    if (!open || voiceOptions || !onSetVoice) return;
+    const ctrl = new AbortController();
+    fetchVoiceOptions(ctrl.signal).then(setVoiceOptions).catch(() => {});
+    return () => ctrl.abort();
+  }, [open, voiceOptions, onSetVoice]);
 
   useEffect(() => {
     if (!open) return;
@@ -259,6 +277,26 @@ export function VoiceSettings({
             </div>
             {voice.error && <div className="text-rose-600 leading-snug">{voice.error}</div>}
           </dl>
+
+          {onSetVoice && voiceOptions && voiceOptions.voices.length > 0 && (
+            <label className={`block pt-3 border-t ${divider}`}>
+              <span className="font-medium">Assistant voice</span>
+              <select
+                value={voice.ttsVoice ?? voiceOptions.default}
+                onChange={(e) => onSetVoice(e.target.value === voiceOptions.default ? null : e.target.value)}
+                className={`mt-1 block w-full h-9 rounded-md border px-2 text-[13px] ${
+                  isLight ? "bg-white border-slate-300" : "bg-slate-900 border-slate-700"
+                }`}
+              >
+                {voiceOptions.voices.map((v) => (
+                  <option key={v} value={v}>
+                    {voiceLabel(v)}
+                    {v === voiceOptions.default ? " (default)" : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
 
           <button
             type="button"

@@ -72,6 +72,9 @@ class BaseDocumentRepository(ABC):
     def insert_chunks(self, chunks: List[Dict[str, Any]]) -> None: ...
 
     @abstractmethod
+    def delete_document_chunks(self, document_id: str, family_entity_id: str) -> int: ...
+
+    @abstractmethod
     def get_chunks_by_ids(self, chunk_ids: List[str]) -> List[Dict[str, Any]]: ...
 
     @abstractmethod

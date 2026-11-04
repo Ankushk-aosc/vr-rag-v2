@@ -236,6 +236,20 @@ export async function synthesizeSpeech(text: string, signal?: AbortSignal, voice
   return await res.blob();
 }
 
+export interface VoiceOptions {
+  provider: string;
+  default: string;
+  voices: string[];
+  model: string | null;
+}
+
+/** Assistant voices this deployment allows (VOICE_OPTIONS on the server). */
+export async function fetchVoiceOptions(signal?: AbortSignal): Promise<VoiceOptions> {
+  const res = await fetch(`${API_BASE_URL}/api/voice/voices`, { headers: getAuthHeaders(), signal });
+  if (!res.ok) throw await toApiError(res);
+  return res.json();
+}
+
 export interface VoiceAskResult {
   user_transcript: string;
   answer: string;
@@ -379,6 +393,26 @@ export function uploadDocumentsWithProgress(
     }
     xhr.send(form);
   });
+}
+
+export interface VisualExtractionSummary {
+  analysed: number;
+  charts: number;
+  readable_charts: number;
+  unreadable_charts: number;
+  failed_pages: number[];
+  skipped_pages: number[];
+  metrics: { page_number: number; source_visual: string; metric: string; period: string; value: number; unit: string; confidence: number }[];
+}
+
+/** Re-analyse a stored PDF's charts and image pages (server authorizes document.upload on it first). */
+export async function analyseDocumentVisuals(documentId: string): Promise<VisualExtractionSummary & { chunks: number }> {
+  const res = await fetch(`${API_BASE_URL}/api/documents/${encodeURIComponent(documentId)}/visual-extract`, {
+    method: "POST",
+    headers: getAuthHeaders(),
+  });
+  if (!res.ok) throw await toApiError(res);
+  return res.json();
 }
 
 /** Build a dashboard (KPI tiles + charts computed from the user's indexed tables) for a question. */

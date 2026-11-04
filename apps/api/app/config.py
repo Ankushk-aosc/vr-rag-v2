@@ -169,6 +169,23 @@ class Settings(BaseSettings):
     OCR_MIN_CONFIDENCE: float = 0.60    # Avg page confidence threshold
     OCR_PREPROCESS_ENABLED: bool = True
     OCR_PDF_TEXT_THRESHOLD: int = 50    # Minimum chars to consider PDF page born-digital
+
+    # Visual understanding of PDF pages (services/pdf_visual.py): charts, plots, scanned pages.
+    # "auto" uses the configured LLM provider; in local mode only a private-network model is used.
+    VISION_ENABLED: bool = True
+    VISION_PROVIDER: str = "auto"       # auto | groq | openai_compatible | local | none
+    VISION_MODEL: Optional[str] = None  # empty = the provider's configured chat model
+    VISION_MAX_PAGES: int = 40          # pages analysed per document
+    VISION_MIN_CONFIDENCE: float = 0.6  # values below this are dropped, never shown
+    VISION_MIN_DRAWINGS: int = 20       # vector drawing count that marks a page as a chart
+    VISION_DPI: int = 110
+    VISION_TIMEOUT_SECONDS: int = 90
+
+    # Assistant voice (POST /api/voice/synthesize). Change these to change the voice, no code needed.
+    VOICE_PROVIDER: str = "auto"        # auto (cloud: edge, local: on-device) | edge | local
+    VOICE_ID: Optional[str] = None      # empty = TTS_VOICE
+    VOICE_MODEL: Optional[str] = None   # reserved for providers that have voice models
+    VOICE_OPTIONS: str = "en-AU-NatashaNeural,en-AU-WilliamNeural,en-AU-AnnetteNeural,en-AU-DarrenNeural"
     S3_BUCKET_NAME: Optional[str] = None
     AWS_REGION: str = "us-east-1"
 

@@ -63,6 +63,26 @@ class StorageService:
         logger.info("Persisted original document locally at %s", target_file)
         return str(target_file)
 
+    def fetch_to_temp(self, document_id: str, filename: str) -> Optional[Path]:
+        """Copies the stored original to a new temp file the caller must delete, or None if missing."""
+        import tempfile
+
+        fd, tmp = tempfile.mkstemp(suffix=Path(filename).suffix)
+        os.close(fd)
+        tmp_path = Path(tmp)
+        local = self.local_dir / document_id / filename
+        try:
+            if local.exists():
+                shutil.copyfile(str(local), str(tmp_path))
+                return tmp_path
+            if self._use_s3():
+                self._get_s3_client().download_file(self.bucket_name, f"{document_id}/{filename}", str(tmp_path))
+                return tmp_path
+        except Exception as e:
+            logger.warning("Could not fetch stored original for %s: %s", document_id, type(e).__name__)
+        tmp_path.unlink(missing_ok=True)
+        return None
+
     def delete_stored(self, document_id: str, filename: str) -> bool:
         """
         Removes the persisted original (ingestion rollback and right-to-erasure deletes).
