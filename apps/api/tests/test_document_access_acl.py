@@ -151,7 +151,8 @@ def test_registry_only_document_is_admin_only(client, monkeypatch):
 def test_failed_document_is_not_found(client):
     entity_id, tokens = _family(client)
     doc_id = _insert_doc(entity_id, "broken.csv", status="failed")
-    assert client.get(f"/api/documents/{doc_id}", headers=_auth(tokens["admin"])).status_code == 404
+    # Failed ingestions are not usable documents: denied like an unknown id (no existence signal)
+    assert client.get(f"/api/documents/{doc_id}", headers=_auth(tokens["admin"])).status_code == 403
 
 
 @pytest.mark.usefixtures("cloud_mode")

@@ -270,8 +270,13 @@ def init_db() -> None:
 
 
 def demo_admin_seeding_allowed() -> bool:
-    """The demo admin has a publicly known password, so it is only seeded in development/test (Audit I-14)."""
-    return bool(settings.SEED_DEMO_ADMIN) and is_dev_environment(settings.ENVIRONMENT)
+    """Only in development/test (Audit I-14), and only with a DEMO_ADMIN_PASSWORD from the environment:
+    the repository carries no default credential."""
+    return (
+        bool(settings.SEED_DEMO_ADMIN)
+        and is_dev_environment(settings.ENVIRONMENT)
+        and bool(settings.DEMO_ADMIN_PASSWORD)
+    )
 
 
 def seed_default_demo_admin() -> None:

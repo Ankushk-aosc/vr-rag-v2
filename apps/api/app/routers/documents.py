@@ -81,7 +81,7 @@ def _authorized_document(document_id: str, current_user: Dict[str, Any], action:
         subject = authorization.resolve_subject(current_user, resource.family_entity_id, action=action)
         authorization.authorize(subject, action, resource)
     else:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+        raise authorization.deny_unknown_resource(current_user, action, "document", document_id)
     # SQL fields win on overlap so tenancy/status always reflect the system of record
     return {**(cloud_doc or {}), **(sql_doc or {})}
 

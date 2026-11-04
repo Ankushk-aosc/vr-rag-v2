@@ -7,7 +7,7 @@ call so tests and operators can switch modes without re-importing.
 """
 from typing import Any, Dict, Iterable, List, Optional
 
-from app.config import settings
+from app.config import is_dev_environment, settings
 from app.db import sqlite
 from app.services import local_vector_index, pinecone_service
 
@@ -25,10 +25,33 @@ def upsert_vectors(chunks: List[Dict[str, Any]], embeddings: List[List[float]],
     )
 
 
+class LegacyVectorStoreDisabled(RuntimeError):
+    pass
+
+
 def uses_app_database() -> bool:
     """PostgreSQL (pgvector) is the primary store whenever DATABASE_URL points at it, in either privacy
-    mode; otherwise local mode uses the SQLite index and cloud mode keeps Pinecone."""
-    return is_local() or sqlite.is_postgres()
+    mode; otherwise local mode uses the SQLite index. Pinecone is only a development fallback, or an
+    explicit ALLOW_LEGACY_VECTOR_STORE opt-in; anywhere else this refuses (fail closed)."""
+    if is_local() or sqlite.is_postgres():
+        return True
+    if is_dev_environment(settings.ENVIRONMENT) or settings.ALLOW_LEGACY_VECTOR_STORE:
+        return False
+    raise LegacyVectorStoreDisabled(
+        "Retrieval requires PostgreSQL + pgvector (set DATABASE_URL). The legacy Pinecone index is disabled "
+        "outside development unless ALLOW_LEGACY_VECTOR_STORE=true."
+    )
+
+
+def assert_production_vector_store() -> None:
+    """Startup check: outside development the API must run on PostgreSQL with the pgvector column."""
+    if is_dev_environment(settings.ENVIRONMENT) or settings.ALLOW_LEGACY_VECTOR_STORE:
+        return
+    if not sqlite.is_postgres():
+        raise LegacyVectorStoreDisabled("DATABASE_URL must point at PostgreSQL with pgvector outside development.")
+    repo = sqlite.get_local_index_repository()
+    if not getattr(repo, "pgvector_enabled", lambda: False)():
+        raise LegacyVectorStoreDisabled("pgvector is not available: install the extension and run migrations to head.")
 
 
 def query_similar_chunks(query_vector: List[float], top_k: int, family_entity_id: str,

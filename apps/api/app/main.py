@@ -42,6 +42,9 @@ def _report_unindexed_chunks() -> None:
 async def lifespan(app: FastAPI):
     # Initialize SQLite System of Record (users, memberships, documents, chunks)
     sqlite.init_db()
+    # Outside development, refuse to start unless retrieval runs on PostgreSQL + pgvector
+    from app.services.vector_index import assert_production_vector_store
+    assert_production_vector_store()
 
     # Phase 4a Multi-Provider & Embedder Consistency Guard
     embedder = factory.get_embedder(settings)

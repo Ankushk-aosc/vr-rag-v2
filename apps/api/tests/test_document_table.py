@@ -29,7 +29,8 @@ def test_get_document_table_requires_auth():
 def test_get_document_table_not_found(auth_headers, mock_current_user):
     with patch("app.services.auth.get_current_user_optional", return_value=mock_current_user):
         response = client.get("/api/documents/non_existent_doc_id/table", headers=auth_headers)
-        assert response.status_code == 404
+        # Unknown ids are denied exactly like other families' documents, so existence is not revealed
+        assert response.status_code == 403 and response.json()["detail"] == "Access denied."
 
 def test_get_document_table_mocked(auth_headers, mock_current_user):
     mock_doc = {

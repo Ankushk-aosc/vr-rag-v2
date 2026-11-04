@@ -4,11 +4,9 @@ import React, { useState } from "react";
 import { Loader2 } from "lucide-react";
 import { login, register, UserProfile } from "../lib/auth";
 
-// Next inlines NODE_ENV, so production bundles drop these dev-only demo credentials entirely
-const DEMO_CREDENTIALS =
-  process.env.NODE_ENV !== "production"
-    ? { email: "admin@sovereignfamily.com.au", password: "SovereignAdmin2026!" }
-    : null;
+// Dev-only shortcut that fills the seeded demo admin email. The password is never in the bundle;
+// it is whatever DEMO_ADMIN_PASSWORD the API was started with.
+const DEMO_EMAIL = process.env.NODE_ENV !== "production" ? "admin@sovereignfamily.com.au" : null;
 
 export interface AuthGatewayProps {
   onAuthenticated: (user: UserProfile) => void;
@@ -165,17 +163,16 @@ export function AuthGateway({ onAuthenticated }: AuthGatewayProps) {
             )}
           </div>
 
-          {DEMO_CREDENTIALS && tab === "login" && (
+          {DEMO_EMAIL && tab === "login" && (
             <button
               type="button"
               onClick={() => {
-                setEmail(DEMO_CREDENTIALS.email);
-                setPassword(DEMO_CREDENTIALS.password);
+                setEmail(DEMO_EMAIL);
                 setErrorMessage(null);
               }}
               className="mt-3 text-[12px] text-slate-500 hover:underline"
             >
-              Development only: fill the seeded demo account
+              Development only: use the seeded demo admin email
             </button>
           )}
         </div>

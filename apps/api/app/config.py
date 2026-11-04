@@ -69,11 +69,15 @@ class Settings(BaseSettings):
     # Demo administrator seed (Audit I-14): only ever seeded in development/test environments
     SEED_DEMO_ADMIN: bool = True
     DEMO_ADMIN_EMAIL: str = "admin@sovereignfamily.com.au"
-    DEMO_ADMIN_PASSWORD: str = "SovereignAdmin2026!"  # dev-only credential, never seeded outside dev/test
+    # Dev-only demo admin: seeded only in development/test AND only when this is set in the environment
+    DEMO_ADMIN_PASSWORD: Optional[str] = None
 
     # Privacy architecture (Audit I-09): see PRIVACY_MODES
     PRIVACY_MODE: str = "local"
     ALLOW_BROWSER_SPEECH: bool = True
+    # PostgreSQL + pgvector is the retrieval store. Outside development, retrieval from the legacy
+    # Pinecone index is refused unless this is explicitly enabled (services/vector_index.py).
+    ALLOW_LEGACY_VECTOR_STORE: bool = False
     # Local OpenAI-compatible LLM server (Ollama, llama.cpp, vLLM, LM Studio) used in local mode
     LOCAL_LLM_BASE_URL: str = "http://127.0.0.1:11434/v1"
     LOCAL_LLM_MODEL: str = "qwen3:8b"

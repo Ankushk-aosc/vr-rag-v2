@@ -270,6 +270,11 @@ def scope_for_roles(family_entity_id: str, user_roles: Iterable[str], user_id: s
 
 # ---------------------------------------------------------------- documents
 
+def deny_unknown_resource(user: Any, action: str, resource_type: str, resource_id: Optional[str]) -> HTTPException:
+    """Unknown ids are denied exactly like forbidden ones (same status and body), and audited."""
+    return _deny(user, action, Resource(resource_type, resource_id, None), "unknown_resource")
+
+
 def document_resource(doc: Dict[str, Any]) -> Resource:
     # A record without a classification is never assumed to be the default tier: it is treated as
     # restricted (admins only), so a data-layer omission can only narrow access, not widen it
@@ -285,11 +290,12 @@ def document_resource(doc: Dict[str, Any]) -> Resource:
 def authorize_document(user: Dict[str, Any], document_id: str, action: str = DOCUMENT_READ) -> Tuple[Subject, Dict[str, Any]]:
     """
     Loads one document from the SQL system of record and authorizes `action` on it.
-    Unknown ids are 404; documents of another family are a generic 403 that reveals nothing about them.
+    A missing, failed or other-family document gets the same 403 "Access denied.", so a caller cannot
+    tell whether an id exists anywhere outside their own scope.
     """
     doc = sqlite.get_document_by_id(document_id)
     if not doc or doc.get("status") == "failed":
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+        raise deny_unknown_resource(user, action, "document", document_id)
     resource = document_resource(doc)
     subject = resolve_subject(user, resource.family_entity_id, action=action)
     authorize(subject, action, resource)

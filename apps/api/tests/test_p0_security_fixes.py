@@ -187,6 +187,7 @@ def test_demo_admin_seed_can_be_disabled_in_dev(tmp_path, monkeypatch):
 def test_leftover_demo_admin_is_flagged_outside_dev(tmp_path, monkeypatch, caplog):
     monkeypatch.setattr(settings, "SQLITE_DB_PATH", str(tmp_path / "seed_leftover.db"))
     monkeypatch.setattr(settings, "ENVIRONMENT", "development")
+    monkeypatch.setattr(settings, "DEMO_ADMIN_PASSWORD", "Demo-only-for-this-test-9x")  # a dev .env value
     sqlite.init_db()  # seeds, as an older build would have
     monkeypatch.setattr(settings, "ENVIRONMENT", "production")
     with caplog.at_level("CRITICAL"):
