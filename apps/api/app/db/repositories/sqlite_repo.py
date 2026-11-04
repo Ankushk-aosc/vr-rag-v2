@@ -192,8 +192,9 @@ class SqliteDocumentRepository(BaseDocumentRepository):
             cursor.execute(
                 """
                 INSERT INTO documents 
-                (id, filename, original_name, mime_type, file_size, file_hash, total_pages, family_entity_id, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, filename, original_name, mime_type, file_size, file_hash, total_pages, family_entity_id, status,
+                 owner_user_id, classification)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
                 (
                     doc["id"],
@@ -205,6 +206,8 @@ class SqliteDocumentRepository(BaseDocumentRepository):
                     doc.get("total_pages", 1),
                     doc["family_entity_id"],
                     doc.get("status", "indexed"),
+                    doc.get("owner_user_id"),
+                    doc.get("classification", "confidential"),
                 ),
             )
             conn.commit()
@@ -250,6 +253,25 @@ class SqliteDocumentRepository(BaseDocumentRepository):
                 (document_id, family_entity_id),
             )
             return [r["allowed_role"] for r in cursor.fetchall()]
+
+    def set_document_classification(self, document_id: str, classification: str) -> None:
+        with get_db_connection() as conn:
+            conn.execute("UPDATE documents SET classification = ? WHERE id = ?", (classification, document_id))
+            conn.commit()
+
+    def get_authorized_document_ids(self, family_entity_id: str, classifications: List[str]) -> List[str]:
+        if not family_entity_id or not classifications:
+            return []
+        with get_db_connection() as conn:
+            placeholders = ",".join("?" for _ in classifications)
+            rows = conn.execute(
+                f"""
+                SELECT id FROM documents
+                WHERE family_entity_id = ? AND status != 'failed' AND classification IN ({placeholders})
+                """,
+                (family_entity_id, *classifications),
+            ).fetchall()
+            return [r["id"] for r in rows]
 
     def insert_chunks(self, chunks: List[Dict[str, Any]]) -> None:
         with get_db_connection() as conn:

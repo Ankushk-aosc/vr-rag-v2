@@ -178,22 +178,23 @@ Note that a test run rewrites the generated files in `apps/api/evals/corpus`; re
 
 ## 6. "View in VR"
 
-Click **View in VR** in the top bar to open the launcher.
+Click **VR** in the top bar to open the **View in VR** launcher. VR is optional; when the device has no WebXR
+support the launcher says so and offers **Open Spatial Room** (desktop 3D) instead.
 
 ### 1. Desktop or laptop browser
 * The 3D room renders in the page; drag to orbit.
-* In the launcher, **Launch Laptop Desktop VR Mode (3D & WASD)** opens the side-by-side stereo viewer.
+* In the launcher, **Stereo preview** opens the side-by-side stereo viewer.
   Move with the WASD keys.
 
 ### 2. Meta Quest or Apple Vision Pro
 * Open the app in the headset browser (Meta Quest Browser or visionOS Safari).
-* When the browser supports WebXR, the launcher shows **Enter Immersive Spatial Session**, which starts an
+* When the browser supports WebXR, the launcher shows **Enter VR**, which starts an
   immersive 6DoF session.
 * Browsers only expose WebXR on secure origins, so serve the app over HTTPS (or `localhost`) for this option to
   appear. A plain `http://<YOUR_LAN_IP>:3000` address falls back to the stereo viewer.
 
 ### 3. Phone (Cardboard-style viewer)
-* Open the app on the phone and use **Launch Laptop Desktop VR Mode (3D & WASD)**.
+* Open the app on the phone and use **Stereo preview**.
 * The screen splits into a stereo pair (64 mm interpupillary distance) and the view follows the phone's
   gyroscope; place the phone in a Cardboard-style headset.
 

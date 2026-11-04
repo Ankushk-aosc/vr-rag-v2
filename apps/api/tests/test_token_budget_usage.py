@@ -237,18 +237,23 @@ def test_rls_hides_other_tenants_llm_usage():
     fam_b = f"fam_b_{uuid.uuid4().hex[:8]}"
 
     with Session(engine) as session:
-        session.execute(text("ALTER TABLE llm_usage ENABLE ROW LEVEL SECURITY;"))
-        session.execute(text("ALTER TABLE llm_usage FORCE ROW LEVEL SECURITY;"))
-        session.execute(text("""
-            DO $$ BEGIN
-                DROP POLICY IF EXISTS test_usage_isolation ON llm_usage;
-                CREATE POLICY test_usage_isolation ON llm_usage
-                FOR ALL
-                USING (
-                    family_entity_id = ANY(string_to_array(nullif(current_setting('app.current_family_ids', true), ''), ','))
-                );
-            END $$;
-        """))
+        try:
+            # Enable RLS (if run by owner; if run by vrrag_app, migrations already enforce RLS)
+            session.execute(text("ALTER TABLE llm_usage ENABLE ROW LEVEL SECURITY;"))
+            session.execute(text("ALTER TABLE llm_usage FORCE ROW LEVEL SECURITY;"))
+            session.execute(text("""
+                DO $$ BEGIN
+                    DROP POLICY IF EXISTS test_usage_isolation ON llm_usage;
+                    CREATE POLICY test_usage_isolation ON llm_usage
+                    FOR ALL
+                    USING (
+                        family_entity_id = ANY(string_to_array(nullif(current_setting('app.current_family_ids', true), ''), ','))
+                    );
+                END $$;
+            """))
+            session.commit()
+        except Exception:
+            session.rollback()
 
         # Seeding two tenants at once needs the explicit system context (Audit I-16)
         session.execute(text("SELECT set_config('app.rls_bypass', 'on', true)"))

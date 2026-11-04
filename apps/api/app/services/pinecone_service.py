@@ -97,7 +97,8 @@ def upsert_vectors(
         conf = float(chunk.get("ocr_confidence", 1.0))
         emb_model = chunk.get("embedder_model") or getattr(settings, "EMBEDDER_MODEL", None) or getattr(settings, "EMBEDDING_MODEL", "all-MiniLM-L6-v2")
         emb_dim = chunk.get("embedder_dim") or (len(emb) if emb else getattr(settings, "EMBEDDER_DIM", 384))
-        bbox = chunk.get("bbox") or [0.0, 0.0, 0.0, 0.0]
+        # Pinecone metadata only accepts lists of strings, so numeric coordinates are stringified
+        bbox = [str(float(v)) for v in (chunk.get("bbox") or [0.0, 0.0, 0.0, 0.0])]
 
         records.append({
             "id": chunk["id"],
@@ -136,7 +137,8 @@ def query_similar_chunks(
     query_vector: List[float],
     top_k: int = 5,
     family_entity_id: str = "default_family",
-    user_roles: List[str] = None
+    user_roles: List[str] = None,
+    allowed_document_ids=None,
 ) -> List[Dict[str, Any]]:
     """
     Pre-Retrieval Filtered Search:
@@ -148,13 +150,20 @@ def query_similar_chunks(
     except Exception as e:
         logger.debug(f"Pinecone unavailable for similarity search: {e}")
         return []
-    user_roles = user_roles or ["family_admin", "family_member"]
-    
-    # Metadata filter to guarantee zero cross-family or unauthorized leakage
+    if not user_roles or not family_entity_id:
+        return []  # no role, no results (fail closed; previously defaulted to admin + member)
+    doc_ids = None if allowed_document_ids is None else sorted(allowed_document_ids)
+    if doc_ids is not None and not doc_ids:
+        return []
+
+    # Metadata filter to guarantee zero cross-family or unauthorized leakage; the authorized
+    # document ids from the access scope are part of the same server-side filter
     query_filter = {
         "family_entity_id": {"$eq": family_entity_id},
-        "allowed_roles": {"$in": user_roles}
+        "allowed_roles": {"$in": list(user_roles)}
     }
+    if doc_ids is not None:
+        query_filter["document_id"] = {"$in": doc_ids}
     
     results = index.query(
         vector=query_vector,

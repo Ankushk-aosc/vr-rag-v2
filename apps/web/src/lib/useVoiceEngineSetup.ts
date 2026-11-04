@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ChatMessage } from "../types";
-import { fetchPrivacyMode } from "./api";
+import { fetchHealthPolicy } from "./api";
 import { VoiceEngine } from "./voice/VoiceEngine";
 import { useVoiceSnapshot, voiceStore } from "./voice/voiceStore";
 
@@ -41,13 +41,17 @@ export function useVoiceEngineSetup({
     });
     engineRef.current = engine;
 
-    // Wake-word standby uses the browser recogniser, so it starts only once the API confirms
-    // PRIVACY_MODE=cloud. Until then (and if the check fails) browser speech stays off (Audit I-26).
+    // Wake-word standby uses the browser recogniser and an open mic, so it resumes only if the user
+    // previously switched on both the wake word and browser speech, and the server still allows it.
+    // Until the policy check answers (and if it fails) browser speech stays off (Audit I-26).
     const privacyCheck = new AbortController();
-    fetchPrivacyMode(privacyCheck.signal).then((mode) => {
+    fetchHealthPolicy(privacyCheck.signal).then((policy) => {
       if (privacyCheck.signal.aborted) return;
-      voiceStore.set({ privacyMode: mode });
-      if (mode === "cloud") engine.startStandby().catch(() => {});
+      voiceStore.set({
+        privacyMode: policy.privacyMode,
+        serverAllowsBrowserSpeech: policy.allowBrowserSpeech,
+      });
+      engine.startStandby().catch(() => {});
     });
 
     const onUserGesture = () => {

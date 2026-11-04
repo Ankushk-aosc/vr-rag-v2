@@ -22,7 +22,7 @@
  */
 import { transcribeAudio } from "../api";
 import { rmsOf } from "../vad";
-import { cloudSpeechAllowed, liveLevels, voiceStore } from "./voiceStore";
+import { canUseBrowserSpeech, liveLevels, voiceStore } from "./voiceStore";
 import { vlog } from "./voiceLog";
 import { BARGE_IN_GRACE_MS, BARGE_IN_HOLD_MS, BARGE_IN_MIN_RMS, MAX_UTTERANCE_MS, NO_SPEECH_RESTART_MS, RECOGNISER_QUIET_MS, TICK_MS, getRecognitionCtor } from "./voiceConfig";
 import { matchWakeWord, stripWakeWord } from "./wakeWord";
@@ -42,9 +42,10 @@ export class VoiceEngine extends VoiceRecognition {
    */
   async startStandby(): Promise<void> {
     if (this.inConversation) return;
-    // The wake word needs the browser recogniser; without it standby would hold the mic open for nothing
-    if (!cloudSpeechAllowed()) {
-      vlog("standby-skipped", { reason: "privacy-mode", privacyMode: voiceStore.get().privacyMode });
+    // The wake word needs the browser recogniser, which the user must have opted into; without it
+    // standby would hold the mic open for nothing. Standby never starts unless both are switched on.
+    if (!this.wakeWordEnabled || !canUseBrowserSpeech()) {
+      vlog("standby-skipped", { reason: "not-opted-in", privacyMode: voiceStore.get().privacyMode });
       return;
     }
     vlog("standby-start", { sttMode: voiceStore.get().sttMode });
@@ -130,7 +131,7 @@ export class VoiceEngine extends VoiceRecognition {
     this.stopListening(true);
     this.stopSpeaking("conversation-end");
 
-    if (this.wakeWordEnabled && cloudSpeechAllowed() && !forceStop) {
+    if (this.wakeWordEnabled && canUseBrowserSpeech() && !forceStop) {
       this.listenStandby();
       return;
     }
@@ -306,7 +307,7 @@ export class VoiceEngine extends VoiceRecognition {
     this.finishing = false;
     this.wakeWordTriggered = false;
     this.listenStartedAt = performance.now();
-    voiceStore.set({ interim: "", standby: false });
+    voiceStore.set({ interim: "", standby: false, statusText: "" });
     this.setPhase("listening");
 
     // Always record: if the browser recogniser returns nothing the recording goes to Whisper.
@@ -414,6 +415,7 @@ export class VoiceEngine extends VoiceRecognition {
     }
     vlog("turn-end", { reason, stt: "server" });
     this.setPhase("transcribing");
+    voiceStore.set({ statusText: "Transcribing…" });
     recorder.onstop = async () => {
       const blob = new Blob(this.recordedChunks, { type: recorder.mimeType || "audio/webm" });
       this.recordedChunks = [];
@@ -445,7 +447,7 @@ export class VoiceEngine extends VoiceRecognition {
       this.finishing = false;
       return this.listen(); // nothing intelligible - keep listening
     }
-    voiceStore.set({ interim: clean, error: null });
+    voiceStore.set({ interim: clean, error: null, statusText: "" });
     this.setPhase("thinking");
     this.handlers.onUtterance(clean);
   }

@@ -1,7 +1,9 @@
 /** Voice engine constants and persisted settings (split from VoiceEngine.ts, Audit I-22). */
-import { cloudSpeechAllowed } from "./voiceStore";
+import { cloudSpeechAllowed, canUseBrowserSpeech, voiceStore } from "./voiceStore";
 
 export type SpeechRecognitionCtor = new () => any;
+
+export const DEFAULT_LOCALE = "en-AU";
 
 export const TICK_MS = 33;
 export const MAX_UTTERANCE_MS = 30000;
@@ -17,8 +19,11 @@ export const SETTINGS_KEY = "aether_voice_settings_v1";
 
 export function getRecognitionCtor(): SpeechRecognitionCtor | null {
   if (typeof window === "undefined") return null;
-  // Single chokepoint for browser recognition: off unless the backend runs in cloud mode (I-26)
-  if (!cloudSpeechAllowed()) return null;
+  const browserSpeechOptIn = voiceStore.get().browserSpeechOptIn;
+  // Browser recognition gated by cloud mode or explicit client-side opt-in
+  if (!canUseBrowserSpeech()) {
+    return null;
+  }
   const w = window as any;
   return w.SpeechRecognition || w.webkitSpeechRecognition || null;
 }
@@ -33,6 +38,7 @@ export interface StoredSettings {
   bargeIn?: boolean;
   sttMode?: "auto" | "server";
   wakeWordEnabled?: boolean;
+  browserSpeechOptIn?: boolean;
 }
 
 export function readSettings(): StoredSettings {

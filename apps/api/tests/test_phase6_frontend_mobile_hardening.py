@@ -24,11 +24,13 @@ async def test_document_suggestions_no_aapl_coupling():
     """U5: Ensure suggestions are dynamically derived rather than hardcoded to Apple."""
     docs = [
         {
+            "id": "legacy_registry_doc",
             "original_name": "Family_Trust_Portfolio_2024.pdf",
             "columns": [],
         }
     ]
-    user = {"id": "usr_1", "memberships": [{"family_entity_id": "fam_1"}]}
+    # A membership must carry a known role; a missing role is denied (fail closed), never defaulted
+    user = {"id": "usr_1", "memberships": [{"family_entity_id": "fam_1", "role": "family_admin"}]}
     with patch("app.routers.documents.pinecone_service.list_documents_from_pinecone", return_value=docs):
         suggestions = await get_document_suggestions(family_entity_id="fam_1", current_user=user)
     assert not any("AAPL" in s for s in suggestions)

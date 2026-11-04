@@ -107,19 +107,23 @@ def test_postgres_rls_raw_sql_policies_when_pg_available():
     Base.metadata.create_all(bind=engine)
 
     with Session(engine) as session:
-        # Enable RLS
-        session.execute(text("ALTER TABLE documents ENABLE ROW LEVEL SECURITY;"))
-        session.execute(text("ALTER TABLE documents FORCE ROW LEVEL SECURITY;"))
-        session.execute(text("""
-            DO $$ BEGIN
-                DROP POLICY IF EXISTS test_documents_isolation ON documents;
-                CREATE POLICY test_documents_isolation ON documents
-                FOR ALL
-                USING (
-                    family_entity_id = ANY(string_to_array(nullif(current_setting('app.current_family_ids', true), ''), ','))
-                );
-            END $$;
-        """))
+        try:
+            # Enable RLS (if run by owner; if run by vrrag_app, migrations already enforce RLS)
+            session.execute(text("ALTER TABLE documents ENABLE ROW LEVEL SECURITY;"))
+            session.execute(text("ALTER TABLE documents FORCE ROW LEVEL SECURITY;"))
+            session.execute(text("""
+                DO $$ BEGIN
+                    DROP POLICY IF EXISTS test_documents_isolation ON documents;
+                    CREATE POLICY test_documents_isolation ON documents
+                    FOR ALL
+                    USING (
+                        family_entity_id = ANY(string_to_array(nullif(current_setting('app.current_family_ids', true), ''), ','))
+                    );
+                END $$;
+            """))
+            session.commit()
+        except Exception:
+            session.rollback()
 
         # Seeding two tenants at once needs the explicit system context (Audit I-16)
         session.execute(text("SELECT set_config('app.rls_bypass', 'on', true)"))

@@ -44,7 +44,11 @@ class HistoryTurn(BaseModel):
 
 class QueryRequest(BaseModel):
     question: str = Field(..., min_length=1, max_length=1000, description="Natural language financial question")
-    family_entity_id: str = Field("default_family", description="Active family trust or personal entity ID")
+    family_entity_id: Optional[str] = Field(
+        None, max_length=64, pattern=r"^[A-Za-z0-9_\-]+$",
+        description="Selects one of the caller's own family entities; omitted = their first membership. "
+                    "Never trusted on its own: the server checks membership before anything is read.",
+    )
     top_k: int = Field(6, ge=1, le=12, description="Number of source passages to retrieve")
     history: List[HistoryTurn] = Field(default_factory=list, max_length=20, description="Prior turns for follow-up questions")
     mode: Literal["text", "voice"] = Field("text", description="'voice' returns a short spoken-style answer")

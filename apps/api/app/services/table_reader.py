@@ -55,7 +55,9 @@ def read_document_table_data(
             query=search,
             family_entity_id=family_id,
             user_roles=["family_member", "family_admin"],
-            top_k=30
+            top_k=30,
+            # The caller was authorized for this one document; search nothing else
+            allowed_document_ids={document_id},
         )
         doc_matched = [c for c in matched_chunks if c.get("document_id") == document_id]
         filtered_rows: List[List[str]] = []
@@ -86,9 +88,8 @@ def read_document_table_data(
             lines = [l.strip() for l in text.splitlines() if l.strip()]
             for i in range(len(lines) - 1):
                 if "|" in lines[i] and "---" in lines[i + 1]:
-                    header = [c.strip() for c in lines[i].strip("|").split("|")]
-                    if not columns:
-                        columns = header
+                    # Each page/sheet carries its own header; it is authoritative for the rows below it
+                    columns = [c.strip() for c in lines[i].strip("|").split("|")]
                     for j in range(i + 2, len(lines)):
                         if "|" in lines[j]:
                             r = [c.strip() for c in lines[j].strip("|").split("|")]
@@ -100,9 +101,10 @@ def read_document_table_data(
                     tot_part = lines[0].split("of ")[1].split(")")[0].strip()
                     total_rows = int(tot_part)
                 except Exception:
-                    total_rows = total_pages * 50
+                    total_rows = len(rows)
             else:
-                total_rows = total_pages * 50
+                # No stated total: report only what was actually read, never an estimate
+                total_rows = len(rows)
         else:
             rows = doc.get("sample_rows") or []
             total_rows = len(rows)
@@ -113,6 +115,7 @@ def read_document_table_data(
 
     if total_rows == 0:
         total_rows = len(rows)
-    calc_pages = max(1, (total_rows + page_size - 1) // page_size) if total_rows > 0 else total_pages
+    # Pages here are the document's own table pages (one per sheet or PDF page), so never report fewer
+    calc_pages = max(total_pages, (total_rows + page_size - 1) // page_size if total_rows > 0 else 1)
     return columns, rows, total_rows, calc_pages
 

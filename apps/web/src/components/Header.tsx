@@ -1,29 +1,19 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
-import {
-  FileText,
-  Glasses,
-  Sparkles,
-  MessageSquare,
-  Box,
-  Sun,
-  Moon,
-  Brain,
-  Lock,
-  Unlock,
-  LayoutGrid,
-  LogOut,
-} from "lucide-react";
-import { FloatingPanel } from "./FloatingPanel";
+import React, { useEffect, useRef, useState } from "react";
+import { Glasses, Sun, Moon, LogOut, ChevronDown, Menu, X, Check } from "lucide-react";
+import { UserProfile } from "../lib/auth";
+import { ROLE_LABEL, entityName, roleFor } from "../lib/roles";
 
-interface HeaderProps {
-  selectedEntity?: string;
+export type SovereignNavView = "home" | "spatial" | "ledger" | "analytics" | "audit" | "access";
+
+export interface HeaderProps {
+  selectedEntity: string;
   onSelectEntity?: (entityId: string) => void;
   onOpenDocuments: () => void;
   onOpenVrModal: () => void;
-  activeView: "spatial" | "ledger";
-  onSelectView: (view: "spatial" | "ledger") => void;
+  activeView: SovereignNavView;
+  onSelectView: (view: SovereignNavView) => void;
   messageCount: number;
   onToggleDialogue: () => void;
   isDialogueOpen: boolean;
@@ -31,17 +21,35 @@ interface HeaderProps {
   onToggleTheme: () => void;
   isThinkingOpen: boolean;
   onToggleThinking: () => void;
-  layoutLocked: boolean;
-  onToggleLayoutLock: () => void;
-  onResetLayout: () => void;
-  userEmail?: string;
+  layoutLocked?: boolean;
+  onToggleLayoutLock?: () => void;
+  onResetLayout?: () => void;
+  currentUser?: UserProfile | null;
   onSignOut?: () => void;
 }
+
+type MenuId = "workspace" | "intelligence" | "governance" | "user";
+
+interface NavItem {
+  label: string;
+  view?: SovereignNavView;
+  /** Panels toggle instead of navigating. */
+  toggle?: () => void;
+  active: boolean;
+}
+
+export const VIEW_TITLES: Record<SovereignNavView, string> = {
+  home: "Dashboard",
+  spatial: "Spatial Room",
+  ledger: "Ledger Vault",
+  analytics: "Analytics",
+  audit: "Audit",
+  access: "Access",
+};
 
 export function Header({
   selectedEntity,
   onSelectEntity,
-  onOpenDocuments,
   onOpenVrModal,
   activeView,
   onSelectView,
@@ -52,242 +60,296 @@ export function Header({
   onToggleTheme,
   isThinkingOpen,
   onToggleThinking,
-  layoutLocked,
-  onToggleLayoutLock,
-  onResetLayout,
-  userEmail,
+  currentUser,
   onSignOut,
 }: HeaderProps) {
-  const [webxrAvailable, setWebxrAvailable] = useState<boolean | null>(null);
-
-  useEffect(() => {
-    if (typeof window !== "undefined" && "xr" in navigator) {
-      // @ts-ignore
-      navigator.xr
-        ?.isSessionSupported("immersive-vr")
-        .then((supported: boolean) => setWebxrAvailable(supported))
-        .catch(() => setWebxrAvailable(false));
-    } else {
-      setWebxrAvailable(false);
-    }
-  }, []);
-
+  const [openMenu, setOpenMenu] = useState<MenuId | null>(null);
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const rootRef = useRef<HTMLElement>(null);
   const isLight = theme === "light";
 
+  useEffect(() => {
+    const onPointer = (e: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpenMenu(null);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setOpenMenu(null);
+        setMobileOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onPointer);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onPointer);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, []);
+
+  const role = roleFor(currentUser, selectedEntity);
+  const entity = entityName(currentUser, selectedEntity);
+  const displayName = currentUser?.full_name || currentUser?.email || "";
+  const initials = (displayName || "?")
+    .split(/[\s@.]+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((p) => p[0]?.toUpperCase())
+    .join("");
+
+  const groups: { id: Exclude<MenuId, "user">; label: string; items: NavItem[] }[] = [
+    {
+      id: "workspace",
+      label: "Workspace",
+      items: (["home", "spatial", "ledger", "analytics"] as SovereignNavView[]).map((v) => ({
+        label: VIEW_TITLES[v],
+        view: v,
+        active: activeView === v,
+      })),
+    },
+    {
+      id: "intelligence",
+      label: "Intelligence",
+      items: [
+        { label: messageCount ? `Dialogue (${messageCount})` : "Dialogue", toggle: onToggleDialogue, active: isDialogueOpen },
+        { label: "Reasoning", toggle: onToggleThinking, active: isThinkingOpen },
+      ],
+    },
+    {
+      id: "governance",
+      label: "Governance",
+      items: (["audit", "access"] as SovereignNavView[]).map((v) => ({ label: VIEW_TITLES[v], view: v, active: activeView === v })),
+    },
+  ];
+
+  const choose = (item: NavItem) => {
+    if (item.view) onSelectView(item.view);
+    else item.toggle?.();
+    setOpenMenu(null);
+    setMobileOpen(false);
+  };
+
+  const navBtn = (active: boolean) =>
+    `h-9 px-3 flex items-center gap-1 rounded-md text-[13px] font-medium transition-colors ${
+      active
+        ? isLight
+          ? "text-[#0A2540] bg-slate-100"
+          : "text-white bg-slate-800"
+        : isLight
+        ? "text-slate-600 hover:text-slate-900 hover:bg-slate-50"
+        : "text-slate-400 hover:text-white hover:bg-slate-800/60"
+    }`;
+  const menuPanel = `absolute top-full mt-1 min-w-[200px] rounded-md border py-1 shadow-lg z-50 ${
+    isLight ? "bg-white border-slate-200" : "bg-[#0F172A] border-slate-700"
+  }`;
+  const menuItem = (active: boolean) =>
+    `w-full flex items-center justify-between gap-3 px-3 py-2 text-[13px] text-left ${
+      active ? (isLight ? "text-[#0A2540] font-medium" : "text-white font-medium") : isLight ? "text-slate-700" : "text-slate-300"
+    } ${isLight ? "hover:bg-slate-50" : "hover:bg-slate-800"}`;
+  const iconBtn = `h-9 w-9 flex items-center justify-center rounded-md border transition-colors ${
+    isLight ? "border-slate-200 text-slate-600 hover:bg-slate-50 hover:text-slate-900" : "border-slate-700 text-slate-300 hover:bg-slate-800"
+  }`;
+
   return (
-    <FloatingPanel
-      id="header"
-      theme={theme}
-      resize="x"
-      showGrip
-      minW={360}
-      minH={52}
-      ariaLabel="Navigation"
-      defaultRect={(vw) => {
-        const w = Math.min(1024, vw - 32);
-        return { x: (vw - w) / 2, y: 44, w, h: 56 };
-      }}
+    <header
+      ref={rootRef}
+      className={`w-full relative z-40 border-b ${isLight ? "bg-white border-slate-200 text-slate-900" : "bg-[#0F172A] border-slate-800 text-white"}`}
     >
-    <header className="w-full">
-      <div
-        data-drag-handle
-        className={`rounded-full px-4 sm:px-5 py-2.5 flex items-center justify-between border shadow-xl transition-colors ${
-          isLight
-            ? "border-black/10 bg-white text-black"
-            : "border-white/10 bg-[#141418] text-white"
-        }`}
-      >
-        {/* Brand Seal & Entity */}
-        <div className="flex items-center space-x-3">
-          <div className="w-8 h-8 rounded-full bg-gradient-to-br from-[#4C1D95] via-[#6D28D9] to-[#2E1065] border border-white/20 flex items-center justify-center shadow-md">
-            <span className="text-[#D4AF37] font-semibold text-xs tracking-tighter">
-              AE
+      <div className="px-4 sm:px-6 h-14 flex items-center gap-4">
+        {/* Brand + entity: never truncated */}
+        <button
+          type="button"
+          onClick={() => onSelectView("home")}
+          className="flex items-center gap-3 flex-shrink-0 text-left"
+          aria-label="Aether Sovereign dashboard"
+        >
+          <span className="w-8 h-8 rounded-md bg-[#0A2540] text-[#E0F2FE] text-[11px] font-bold tracking-wider flex items-center justify-center">
+            AS
+          </span>
+          <span className="leading-tight">
+            <span className={`block text-[13px] font-semibold tracking-[0.08em] whitespace-nowrap ${isLight ? "text-[#0A2540]" : "text-white"}`}>
+              AETHER SOVEREIGN
             </span>
-          </div>
-          <div>
-            <div className="flex items-center space-x-2">
-              <span className="font-semibold text-xs sm:text-sm tracking-tight">
-                Aether{" "}
-                <span className={isLight ? "text-[#6D28D9] font-normal" : "text-[#A78BFA] font-normal"}>
-                  Sovereign
-                </span>
-              </span>
-              <span
-                className={`hidden sm:inline text-[9px] uppercase font-mono font-semibold px-2 py-0.5 rounded-full border ${
-                  isLight
-                    ? "bg-[#6D28D9]/10 text-[#6D28D9] border-[#6D28D9]/20"
-                    : "bg-[#7C3AED]/15 text-[#A78BFA] border-[#7C3AED]/30"
+            <span className={`hidden sm:block text-[12px] whitespace-nowrap ${isLight ? "text-slate-500" : "text-slate-400"}`}>{entity}</span>
+          </span>
+        </button>
+
+        {/* Grouped navigation (desktop) */}
+        <nav aria-label="Main" className="hidden lg:flex items-center gap-1 ml-4">
+          {groups.map((g) => {
+            const groupActive = g.items.some((i) => i.active && i.view);
+            return (
+              <div key={g.id} className="relative">
+                <button
+                  type="button"
+                  aria-haspopup="menu"
+                  aria-expanded={openMenu === g.id}
+                  onClick={() => setOpenMenu(openMenu === g.id ? null : g.id)}
+                  className={navBtn(groupActive)}
+                >
+                  {g.label}
+                  <ChevronDown className="w-3.5 h-3.5 opacity-60" aria-hidden />
+                </button>
+                {openMenu === g.id && (
+                  <div role="menu" aria-label={g.label} className={`${menuPanel} left-0`}>
+                    {g.items.map((item) => (
+                      <button
+                        key={item.label}
+                        type="button"
+                        role={item.toggle ? "menuitemcheckbox" : "menuitem"}
+                        aria-checked={item.toggle ? item.active : undefined}
+                        aria-current={item.view && item.active ? "page" : undefined}
+                        onClick={() => choose(item)}
+                        className={menuItem(item.active)}
+                      >
+                        <span>{item.label}</span>
+                        {item.active && <Check className="w-3.5 h-3.5 text-blue-600" aria-hidden />}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </nav>
+
+        <div className="ml-auto flex items-center gap-2 flex-shrink-0">
+          <button
+            type="button"
+            onClick={onOpenVrModal}
+            className={`h-9 px-3 flex items-center gap-1.5 rounded-md border text-[13px] font-medium ${
+              isLight ? "border-slate-200 text-slate-700 hover:bg-slate-50" : "border-slate-700 text-slate-200 hover:bg-slate-800"
+            }`}
+            aria-label="View in VR"
+          >
+            <Glasses className="w-4 h-4" aria-hidden />
+            <span className="hidden sm:inline">VR</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={onToggleTheme}
+            aria-label={isLight ? "Switch to dark theme" : "Switch to light theme"}
+            title={isLight ? "Dark theme" : "Light theme"}
+            className={`${iconBtn} hidden sm:flex`}
+          >
+            {isLight ? <Moon className="w-4 h-4" /> : <Sun className="w-4 h-4" />}
+          </button>
+
+          {currentUser && (
+            <div className="relative">
+              <button
+                type="button"
+                aria-haspopup="menu"
+                aria-expanded={openMenu === "user"}
+                aria-label={`Account: ${displayName}`}
+                onClick={() => setOpenMenu(openMenu === "user" ? null : "user")}
+                className={`h-9 flex items-center gap-2 pl-1 pr-2 rounded-md border ${
+                  isLight ? "border-slate-200 hover:bg-slate-50" : "border-slate-700 hover:bg-slate-800"
                 }`}
               >
-                AUD $
-              </span>
+                <span className="w-7 h-7 rounded bg-[#0A2540] text-white text-[11px] font-semibold flex items-center justify-center">
+                  {initials}
+                </span>
+                <span className="hidden xl:block text-[13px] max-w-[160px] truncate">{displayName}</span>
+                <ChevronDown className="w-3.5 h-3.5 opacity-60" aria-hidden />
+              </button>
+              {openMenu === "user" && (
+                <div role="menu" aria-label="Account" className={`${menuPanel} right-0 w-72`}>
+                  <div className={`px-3 py-2.5 border-b ${isLight ? "border-slate-100" : "border-slate-800"}`}>
+                    <div className="text-[13px] font-medium truncate">{currentUser.full_name}</div>
+                    <div className="text-[12px] text-slate-500 truncate">{currentUser.email}</div>
+                    <div className="text-[12px] text-slate-500 mt-1">
+                      {entity} · {ROLE_LABEL[role]}
+                    </div>
+                  </div>
+                  {onSelectEntity && (currentUser.memberships?.length || 0) > 1 && (
+                    <div className={`py-1 border-b ${isLight ? "border-slate-100" : "border-slate-800"}`}>
+                      <div className="px-3 pt-1 pb-0.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Family entity</div>
+                      {currentUser.memberships.map((m) => (
+                        <button
+                          key={m.family_entity_id}
+                          type="button"
+                          role="menuitemradio"
+                          aria-checked={m.family_entity_id === selectedEntity}
+                          onClick={() => {
+                            onSelectEntity(m.family_entity_id);
+                            setOpenMenu(null);
+                          }}
+                          className={menuItem(m.family_entity_id === selectedEntity)}
+                        >
+                          <span className="truncate">{m.entity_name || m.family_entity_id}</span>
+                          {m.family_entity_id === selectedEntity && <Check className="w-3.5 h-3.5 text-blue-600" aria-hidden />}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <button type="button" role="menuitem" onClick={onToggleTheme} className={`${menuItem(false)} sm:hidden`}>
+                    {isLight ? "Dark theme" : "Light theme"}
+                  </button>
+                  {onSignOut && (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setOpenMenu(null);
+                        onSignOut();
+                      }}
+                      className={`${menuItem(false)} !text-rose-600`}
+                    >
+                      <span>Sign out</span>
+                      <LogOut className="w-3.5 h-3.5" aria-hidden />
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
-          </div>
-        </div>
-
-        {/* Center View Switcher */}
-        <div
-          className={`flex items-center rounded-full p-1 space-x-1 border ${
-            isLight
-              ? "bg-black/5 border-black/5"
-              : "bg-black/40 border-white/10"
-          }`}
-        >
-          <button
-            onClick={() => onSelectView("spatial")}
-            className={`flex items-center space-x-1.5 px-3 py-1 rounded-full text-xs font-medium transition-all ${
-              activeView === "spatial"
-                ? isLight
-                  ? "bg-black text-white shadow-md"
-                  : "bg-white text-black shadow-md"
-                : isLight
-                ? "text-black/60 hover:text-black"
-                : "text-white/60 hover:text-white"
-            }`}
-          >
-            <Box className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Spatial Room</span>
-          </button>
-
-          <button
-            onClick={() => onSelectView("ledger")}
-            className={`flex items-center space-x-1.5 px-3 py-1 rounded-full text-xs font-medium transition-all ${
-              activeView === "ledger"
-                ? isLight
-                  ? "bg-black text-white shadow-md"
-                  : "bg-white text-black shadow-md"
-                : isLight
-                ? "text-black/60 hover:text-black"
-                : "text-white/60 hover:text-white"
-            }`}
-          >
-            <FileText className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Ledger Vault</span>
-          </button>
-        </div>
-
-        {/* Right Actions & Theme Switch */}
-        <div className="flex items-center space-x-1.5 sm:space-x-2">
-          {/* Live reasoning window */}
-          <button
-            onClick={onToggleThinking}
-            title={isThinkingOpen ? "Hide reasoning window" : "Show reasoning window"}
-            className={`hidden md:flex items-center space-x-1.5 px-3 py-1.5 rounded-full border text-xs font-medium transition-all ${
-              isThinkingOpen
-                ? isLight
-                  ? "bg-[#6D28D9]/15 text-[#6D28D9] border-[#6D28D9]/40"
-                  : "bg-[#7C3AED]/20 text-[#A78BFA] border-[#7C3AED]/50"
-                : isLight
-                ? "bg-black/5 hover:bg-black/10 text-black/80 border-black/10"
-                : "bg-white/5 hover:bg-white/10 text-white/80 border-white/10"
-            }`}
-          >
-            <Brain className="w-3.5 h-3.5" />
-            <span className="hidden lg:inline">Reasoning</span>
-          </button>
-
-          {/* Layout: lock / reset every movable panel (2D and 3D) */}
-          <div
-            className={`flex items-center rounded-full border ${
-              isLight ? "border-black/10 bg-black/5" : "border-white/10 bg-white/5"
-            }`}
-          >
-            <button
-              onClick={onToggleLayoutLock}
-              title={layoutLocked ? "Unlock layout (allow moving panels)" : "Lock layout (prevent accidental moves)"}
-              className={`p-2 rounded-full transition-all ${
-                layoutLocked ? "text-[#D4AF37]" : isLight ? "text-black/60 hover:text-black" : "text-white/60 hover:text-white"
-              }`}
-            >
-              {layoutLocked ? <Lock className="w-3.5 h-3.5" /> : <Unlock className="w-3.5 h-3.5" />}
-            </button>
-            <button
-              onClick={onResetLayout}
-              title="Reset all panel positions (2D and 3D)"
-              className={`p-2 rounded-full transition-all ${isLight ? "text-black/60 hover:text-black" : "text-white/60 hover:text-white"}`}
-            >
-              <LayoutGrid className="w-3.5 h-3.5" />
-            </button>
-          </div>
-
-          {/* Dialogue Toggle Button */}
-          <button
-            onClick={onToggleDialogue}
-            aria-label="Toggle dialogue panel"
-            className={`relative flex items-center space-x-1.5 px-3 py-1.5 rounded-full border text-xs font-medium transition-all ${
-              isDialogueOpen
-                ? isLight
-                  ? "bg-[#6D28D9]/15 text-[#6D28D9] border-[#6D28D9]/40"
-                  : "bg-[#7C3AED]/20 text-[#A78BFA] border-[#7C3AED]/50"
-                : isLight
-                ? "bg-black/5 hover:bg-black/10 text-black/80 border-black/10"
-                : "bg-white/5 hover:bg-white/10 text-white/80 border-white/10"
-            }`}
-          >
-            <MessageSquare className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Dialogue</span>
-            {messageCount > 0 && (
-              <span className="w-4 h-4 rounded-full bg-[#7C3AED] text-white font-mono text-[9px] font-bold flex items-center justify-center">
-                {messageCount}
-              </span>
-            )}
-          </button>
-
-          {/* Dark / Light Mode Switcher */}
-          <button
-            onClick={onToggleTheme}
-            aria-label={isLight ? "Switch to dark mode" : "Switch to light mode"}
-            title={isLight ? "Dark Mode" : "Light Mode"}
-            className={`p-2 rounded-full border transition-all hover:scale-105 active:scale-95 ${
-              isLight
-                ? "bg-black/5 hover:bg-black/10 border-black/10 text-black"
-                : "bg-white/10 hover:bg-white/15 border-white/10 text-yellow-300"
-            }`}
-          >
-            {isLight ? (
-              <Moon className="w-3.5 h-3.5 text-[#581C87]" />
-            ) : (
-              <Sun className="w-3.5 h-3.5 text-[#D4AF37]" />
-            )}
-          </button>
-
-          {/* User Sign Out */}
-          {onSignOut && (
-            <button
-              onClick={onSignOut}
-              title={`Signed in as ${userEmail || "Administrator"}. Click to Sign Out.`}
-              aria-label="Sign Out"
-              className={`flex items-center space-x-1 px-2.5 py-1.5 rounded-full border text-xs font-medium transition-all hover:scale-105 active:scale-95 ${
-                isLight
-                  ? "bg-black/5 hover:bg-red-50 text-black/70 hover:text-red-600 border-black/10 hover:border-red-200"
-                  : "bg-white/5 hover:bg-red-950/40 text-white/70 hover:text-red-400 border-white/10 hover:border-red-900/40"
-              }`}
-            >
-              <LogOut className="w-3.5 h-3.5" />
-              <span className="hidden lg:inline text-[11px]">Sign Out</span>
-            </button>
           )}
 
-          {/* Apple Vision Pro "View in VR" Button */}
           <button
-            onClick={onOpenVrModal}
-            className={`flex items-center space-x-1.5 px-3.5 py-1.5 rounded-full font-semibold text-xs tracking-tight transition-all active:scale-95 shadow-md ${
-              isLight
-                ? "bg-[#581C87] text-white hover:bg-[#4C1D95]"
-                : "bg-white text-black hover:bg-white/90"
-            }`}
+            type="button"
+            onClick={() => setMobileOpen((v) => !v)}
+            className={`${iconBtn} lg:hidden`}
+            aria-label={mobileOpen ? "Close navigation menu" : "Open navigation menu"}
+            aria-expanded={mobileOpen}
+            aria-controls="mobile-nav"
           >
-            <Glasses className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">View in VR</span>
-            <span
-              className={`w-1.5 h-1.5 rounded-full ${
-                webxrAvailable ? "bg-[#30D158]" : "bg-[#7C3AED]"
-              }`}
-            />
+            {mobileOpen ? <X className="w-4 h-4" /> : <Menu className="w-4 h-4" />}
           </button>
         </div>
       </div>
+
+      {mobileOpen && (
+        <nav
+          id="mobile-nav"
+          aria-label="Main"
+          className={`lg:hidden absolute top-full inset-x-0 border-b shadow-lg max-h-[calc(100vh-7rem)] overflow-y-auto ${
+            isLight ? "bg-white border-slate-200" : "bg-[#0F172A] border-slate-800"
+          }`}
+        >
+          <div className="px-4 py-3 grid gap-4 sm:grid-cols-3">
+            {groups.map((g) => (
+              <div key={g.id}>
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-1">{g.label}</div>
+                <ul>
+                  {g.items.map((item) => (
+                    <li key={item.label}>
+                      <button
+                        type="button"
+                        onClick={() => choose(item)}
+                        aria-current={item.view && item.active ? "page" : undefined}
+                        className={`${menuItem(item.active)} rounded-md px-2`}
+                      >
+                        <span>{item.label}</span>
+                        {item.active && <Check className="w-3.5 h-3.5 text-blue-600" aria-hidden />}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+        </nav>
+      )}
     </header>
-    </FloatingPanel>
   );
 }

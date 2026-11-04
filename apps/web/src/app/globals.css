@@ -2,25 +2,41 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * Aether Sovereign design tokens. Light is the default; html.dark switches to the dark palette.
+ * Font files are self-hosted by next/font (layout.tsx); no runtime request to Google (Audit I-26).
+ */
 :root {
-  /* Font files are self-hosted by next/font (layout.tsx); no runtime request to Google (Audit I-26) */
-  --font-inter: var(--font-inter-self), 'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif;
+  --font-inter: var(--font-inter-self), 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --font-mono: var(--font-mono-self), 'JetBrains Mono', 'SF Mono', monospace;
-  --bg-primary: #000000;
-  --text-primary: #F5F5F7;
-  --glass-bg: rgba(20, 20, 26, 0.75);
-  --glass-border: rgba(255, 255, 255, 0.08);
-  --accent-purple: #7C3AED;
-  --accent-purple-glow: rgba(124, 58, 237, 0.35);
+
+  --navy: #0A2540;
+  --slate-deep: #0F172A;
+  --blue: #2563EB;
+  --blue-strong: #1D4ED8;
+  --ice: #E0F2FE;
+  --reasoning: #6D28D9;
+
+  --bg-primary: #F8FAFC;
+  --surface: #FFFFFF;
+  --border: #E2E8F0;
+  --text-primary: #0F172A;
+  --text-muted: #64748B;
+
+  /* Kept for components that still reference the old names */
+  --glass-bg: var(--surface);
+  --glass-border: var(--border);
+  --accent-purple: var(--reasoning);
+  --accent-purple-glow: rgba(109, 40, 217, 0.16);
 }
 
-.light {
-  --bg-primary: #F5F5F7;
-  --text-primary: #1C1C1E;
-  --glass-bg: rgba(255, 255, 255, 0.85);
-  --glass-border: rgba(0, 0, 0, 0.08);
-  --accent-purple: #6D28D9;
-  --accent-purple-glow: rgba(109, 40, 217, 0.20);
+html.dark {
+  --bg-primary: #0B1120;
+  --surface: #0F172A;
+  --border: #1E293B;
+  --text-primary: #E2E8F0;
+  --text-muted: #94A3B8;
+  color-scheme: dark;
 }
 
 body {
@@ -30,84 +46,50 @@ body {
   overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  transition: background-color 0.3s ease, color 0.3s ease;
 }
 
-/* Tabular lining figures for banking and currency precision */
-.tabular-numbers, .currency-num {
+/* Tabular lining figures for currency and ledger columns */
+.tabular-numbers,
+.currency-num {
   font-variant-numeric: tabular-nums;
-  letter-spacing: -0.01em;
 }
 
-/* Minimalist Apple Scrollbar */
 ::-webkit-scrollbar {
-  width: 5px;
-  height: 5px;
+  width: 8px;
+  height: 8px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(124, 58, 237, 0.25);
+  background: rgba(100, 116, 139, 0.35);
   border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(124, 58, 237, 0.45);
+  background-color: rgba(100, 116, 139, 0.55);
 }
 
-/* Apple Sovereign Liquid Glass Surfaces */
-.apple-glass {
-  background: var(--glass-bg);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
-  border: 1px solid var(--glass-border);
-  box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.4);
-}
-
-.light .apple-glass {
-  box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.08), 0 0 0 1px rgba(0, 0, 0, 0.05);
-}
-
+/* Solid surfaces. The class names are historical; there is deliberately no blur or glow. */
+.apple-glass,
 .apple-glass-interactive {
-  background: var(--glass-bg);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid var(--glass-border);
-  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06), 0 8px 24px -12px rgba(15, 23, 42, 0.18);
 }
 
-.apple-glass-interactive:hover {
-  border-color: rgba(124, 58, 237, 0.3);
-  transform: translateY(-1px);
-}
-
-/* Aether Fluid Dynamic Wave Ribbon Animation (Royal Purple & Gold palette) */
-@keyframes aether-fluid-wave {
-  0% {
-    background-position: 0% 50%;
-  }
-  50% {
-    background-position: 100% 50%;
-  }
-  100% {
-    background-position: 0% 50%;
-  }
-}
-
+/* Voice level bars */
 .aether-wave-gradient {
-  background: linear-gradient(
-    90deg,
-    #7C3AED,
-    #A78BFA,
-    #6D28D9,
-    #D4AF37,
-    #7C3AED
-  );
-  background-size: 300% 300%;
-  animation: aether-fluid-wave 3.5s ease infinite;
+  background: var(--blue);
 }
 
-/* Streaming answer caret (Markdown) and live reasoning caret */
+:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+
+/* Streaming answer caret (Markdown) */
 @keyframes aether-blink {
   0%, 45% { opacity: 1; }
   55%, 100% { opacity: 0; }
@@ -120,7 +102,7 @@ body {
   margin-left: 2px;
   vertical-align: -0.12em;
   border-radius: 1px;
-  background: #8b5cf6;
+  background: var(--blue);
   animation: aether-blink 1s steps(1) infinite;
 }
 .aether-streaming > :last-child::after {
@@ -128,4 +110,14 @@ body {
 }
 .aether-markdown > :first-child {
   margin-top: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

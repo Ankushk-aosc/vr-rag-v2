@@ -66,6 +66,9 @@ def _doc_to_dict(doc: DocumentModel) -> Dict[str, Any]:
         "family_entity_id": doc.family_entity_id,
         "status": doc.status,
         "uploaded_at": _dt_to_str(doc.uploaded_at),
+        # ABAC attributes: omitting these would make every document look like the default tier
+        "owner_user_id": doc.owner_user_id,
+        "classification": doc.classification,
     }
 
 
@@ -260,6 +263,8 @@ class SqlAlchemyDocumentRepository(BaseDocumentRepository):
                 total_pages=doc.get("total_pages", 1),
                 family_entity_id=family_id,
                 status=doc.get("status", "indexed"),
+                owner_user_id=doc.get("owner_user_id"),
+                classification=doc.get("classification", "confidential"),
             )
             session.add(db_doc)
 
@@ -291,6 +296,21 @@ class SqlAlchemyDocumentRepository(BaseDocumentRepository):
             stmt = select(DocumentAclModel.allowed_role).where(
                 DocumentAclModel.document_id == document_id,
                 DocumentAclModel.family_entity_id == family_entity_id,
+            )
+            return list(session.scalars(stmt).all())
+
+    def set_document_classification(self, document_id: str, classification: str) -> None:
+        with get_db_session(system=True) as session:  # id lookup, authorized by the caller (Audit I-16)
+            session.execute(update(DocumentModel).where(DocumentModel.id == document_id).values(classification=classification))
+
+    def get_authorized_document_ids(self, family_entity_id: str, classifications: List[str]) -> List[str]:
+        if not family_entity_id or not classifications:
+            return []
+        with get_db_session(family_ids=[family_entity_id]) as session:
+            stmt = select(DocumentModel.id).where(
+                DocumentModel.family_entity_id == family_entity_id,
+                DocumentModel.status != "failed",
+                DocumentModel.classification.in_(list(classifications)),
             )
             return list(session.scalars(stmt).all())
 

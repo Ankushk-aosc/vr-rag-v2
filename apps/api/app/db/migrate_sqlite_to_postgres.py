@@ -85,6 +85,26 @@ def fetch_sqlite_rows(sqlite_path: str, table_name: str) -> List[Dict[str, Any]]
         conn.close()
 
 
+def _system_context(session: Session) -> None:
+    """FORCE RLS applies to every role; a cross-tenant copy must run as an explicit system transaction."""
+    if session.get_bind().dialect.name == "postgresql":
+        session.execute(text("SELECT set_config('app.rls_bypass', 'on', true)"))
+
+
+def _reconcile_classification(engine) -> None:
+    """Sources older than migration 008 have no classification column, so copied rows get the default.
+    Admin-only ACLs must become "restricted", or members could read them (ABAC uses classification)."""
+    with Session(engine) as session:
+        _system_context(session)
+        res = session.execute(text(
+            "UPDATE documents SET classification = 'restricted' "
+            "WHERE classification <> 'restricted' AND id IN "
+            "(SELECT document_id FROM document_acl WHERE allowed_role = 'family_admin')"
+        ))
+        session.commit()
+        logger.info("Classification reconciled from ACL for %d document(s).", res.rowcount or 0)
+
+
 def migrate(
     sqlite_path: str,
     postgres_url: str,
@@ -116,6 +136,7 @@ def migrate(
 
         # Perform actual migration
         with Session(engine) as session:
+            _system_context(session)
             for row in rows:
                 col_keys = {c.name for c in model_class.__table__.columns}
                 filtered_row = {k: v for k, v in row.items() if k in col_keys}
@@ -135,6 +156,7 @@ def migrate(
 
         # Verify target count
         with Session(engine) as session:
+            _system_context(session)
             pg_count = session.execute(select(text("count(*)")).select_from(model_class)).scalar() or 0
 
         report[table_name] = (sqlite_count, pg_count)
@@ -145,6 +167,8 @@ def migrate(
         else:
             logger.info(f"Verified '{table_name}': {pg_count} rows migrated successfully.")
 
+    if not dry_run:
+        _reconcile_classification(engine)
     return report
 
 

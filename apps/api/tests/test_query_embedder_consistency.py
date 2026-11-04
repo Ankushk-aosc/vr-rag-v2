@@ -18,7 +18,7 @@ pytestmark = pytest.mark.usefixtures("cloud_mode")  # Pinecone-path tests (Audit
 def captured(monkeypatch):
     calls = []
 
-    def fake_query(query_vector, top_k, family_entity_id, user_roles):
+    def fake_query(query_vector, top_k, family_entity_id, user_roles, **_scope):
         calls.append({"vector": query_vector, "family": family_entity_id, "roles": user_roles, "k": top_k})
         return []
 

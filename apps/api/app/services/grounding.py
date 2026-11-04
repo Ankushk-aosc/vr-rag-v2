@@ -97,9 +97,13 @@ def extract_numbers_from_evidence(evidence_text: str) -> Set[Decimal]:
 
 def verify_grounding(
     answer: str,
-    citations: List[Dict[str, Any]],
+    citations: Optional[List[Dict[str, Any]]] = None,
     mode: str = "text",
     not_found_phrase: str = "couldn't find that in your indexed documents",
+    retrieved_chunks: Optional[List[Dict[str, Any]]] = None,
+    valid_citations: Optional[List[Dict[str, Any]]] = None,
+    grounded_threshold: float = 0.8,
+    **kwargs: Any,
 ) -> Dict[str, Any]:
     """
     Phase 3.6 Strict Grounding Verifier:
@@ -108,6 +112,8 @@ def verify_grounding(
     3. Compares parsed Decimal numbers from answer against numbers extracted from cited evidence.
     4. Eliminates fuzzy "counts as grounded": any ungrounded claim invalidates grounding.
     """
+    if citations is None:
+        citations = valid_citations or retrieved_chunks or []
     if not answer or not answer.strip():
         return {
             "grounded": False,

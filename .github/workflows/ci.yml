@@ -73,7 +73,7 @@ jobs:
         working-directory: apps/api
     services:
       postgres:
-        image: postgres:16-alpine
+        image: pgvector/pgvector:pg16  # same image as docker-compose; migration 008 needs the vector extension
         env:
           POSTGRES_PASSWORD: postgres
         ports:
@@ -107,6 +107,8 @@ jobs:
           psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 \
             -c "CREATE ROLE vrrag_app LOGIN PASSWORD 'ci-only-password' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;" \
             -c "CREATE DATABASE vrrag OWNER vrrag_app;"
+          # The app role cannot create extensions; install pgvector as the superuser first
+          psql -h 127.0.0.1 -U postgres -d vrrag -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS vector;"
 
       - name: Startup check (migrations to head, RLS enabled + forced, role cannot bypass)
         env:

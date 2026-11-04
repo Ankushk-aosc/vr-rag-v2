@@ -73,6 +73,7 @@ class Settings(BaseSettings):
 
     # Privacy architecture (Audit I-09): see PRIVACY_MODES
     PRIVACY_MODE: str = "local"
+    ALLOW_BROWSER_SPEECH: bool = True
     # Local OpenAI-compatible LLM server (Ollama, llama.cpp, vLLM, LM Studio) used in local mode
     LOCAL_LLM_BASE_URL: str = "http://127.0.0.1:11434/v1"
     LOCAL_LLM_MODEL: str = "qwen3:8b"

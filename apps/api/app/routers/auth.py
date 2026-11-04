@@ -3,10 +3,10 @@ import threading
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional
-from fastapi import APIRouter, Depends, HTTPException, Security, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, Security, status
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field, field_validator
-from app.services import auth, pinecone_service
+from app.services import auth, authorization, pinecone_service
 from app.middleware.rate_limiter import rate_limit
 
 router = APIRouter(prefix="/api/auth", tags=["Authentication & Family Access"])
@@ -136,15 +136,9 @@ async def create_invite(
     current_user: Dict[str, Any] = Depends(auth.get_current_user)
 ):
     """Family admins issue single-use, expiring invites for new members or read-only advisers."""
-    memberships = current_user.get("memberships") or []
-    target = next((m for m in memberships if m["family_entity_id"] == req.family_entity_id), None)
-    if not target:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Access denied: You do not hold active membership in family entity '{req.family_entity_id}'."
-        )
-    if target.get("role") != "family_admin":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied: Only family_admin can issue invites.")
+    # RBAC invites.manage (family admins) AND ABAC (the caller's own family)
+    subject = authorization.resolve_subject(current_user, req.family_entity_id, action=authorization.INVITES_MANAGE)
+    authorization.authorize(subject, authorization.INVITES_MANAGE)
 
     issued = auth.create_invite_token(req.family_entity_id, req.role, current_user["id"], req.expires_in_hours)
     sqlite.log_audit_event(
@@ -168,7 +162,7 @@ async def create_invite(
     status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(rate_limit(max_requests=20, window_seconds=60, per="ip"))]
 )
-async def register(req: RegisterRequest):
+async def register(req: RegisterRequest, response: Response):
     existing = sqlite.get_user_by_email(req.email)
     if existing:
         raise HTTPException(
@@ -240,15 +234,25 @@ async def register(req: RegisterRequest):
         "memberships": [{"family_entity_id": entity_id, "role": assigned_role}]
     }
 
+    if response:
+        response.set_cookie(
+            key="aether_session",
+            value=token,
+            httponly=True,
+            secure=False,
+            samesite="lax",
+            max_age=auth.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+            path="/",
+        )
     return AuthResponse(access_token=token, user=safe_user)
 
 
 @router.post(
-    "/login",
+    "/login", 
     response_model=AuthResponse,
     dependencies=[Depends(rate_limit(max_requests=20, window_seconds=60, per="ip"))]
 )
-async def login(req: LoginRequest):
+async def login(req: LoginRequest, response: Response):
     user = sqlite.get_user_by_email(req.email)
     if not user:
         # Mitigate timing attack user enumeration by executing constant-time dummy hashing (Audit S11)
@@ -303,6 +307,37 @@ async def login(req: LoginRequest):
         "memberships": memberships
     }
 
+    if response:
+        response.set_cookie(
+            key="aether_session",
+            value=token,
+            httponly=True,
+            secure=False,
+            samesite="lax",
+            max_age=auth.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+            path="/",
+        )
+    return AuthResponse(access_token=token, user=safe_user)
+
+
+@router.post("/refresh", response_model=AuthResponse)
+async def refresh_session(
+    response: Response,
+    current_user: Dict[str, Any] = Depends(auth.get_current_user),
+):
+    """Refreshes the caller's session and updates HttpOnly cookie."""
+    token = auth.issue_access_token(current_user)
+    response.set_cookie(
+        key="aether_session",
+        value=token,
+        httponly=True,
+        secure=False,
+        samesite="lax",
+        max_age=auth.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        path="/",
+    )
+    safe_user = current_user.copy()
+    safe_user.pop("hashed_password", None)
     return AuthResponse(access_token=token, user=safe_user)
 
 
@@ -323,22 +358,16 @@ async def get_audit_trail(
     Enforces strict tenant isolation and RBAC. Family admins can view entity-scoped audit logs.
     Non-admins are restricted to their own user-scoped events.
     """
-    user_memberships = current_user.get("memberships") or []
-    admin_entities = [m["family_entity_id"] for m in user_memberships if m.get("role") == "family_admin"]
-    member_entities = [m["family_entity_id"] for m in user_memberships]
-
     if family_entity_id:
-        if family_entity_id not in member_entities:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Access denied: You do not hold active membership in family entity '{family_entity_id}'."
-            )
-        if family_entity_id not in admin_entities:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Permission denied: Only family_admin can view entity-wide audit logs."
-            )
+        # RBAC audit.read (family admins) AND ABAC (the caller's own family)
+        subject = authorization.resolve_subject(current_user, family_entity_id, action=authorization.AUDIT_READ)
+        authorization.authorize(subject, authorization.AUDIT_READ)
         return sqlite.get_audit_events_for_entities([family_entity_id], limit=50)
+
+    admin_entities = [
+        m["family_entity_id"] for m in current_user.get("memberships") or []
+        if authorization.AUDIT_READ in authorization.ROLE_PERMISSIONS.get(m.get("role"), frozenset())
+    ]
 
     # If no specific entity requested, return audit trail for the caller's admin entities
     if admin_entities:
@@ -350,9 +379,11 @@ async def get_audit_trail(
 
 @router.post("/logout")
 async def logout(
+    response: Response,
     current_user: Dict[str, Any] = Depends(auth.get_current_user),
-    auth_cred: Optional[HTTPAuthorizationCredentials] = Security(auth.security)
+    auth_cred: Optional[HTTPAuthorizationCredentials] = Security(auth.security),
 ):
+    response.delete_cookie(key="aether_session", path="/")
     """
     Session Logout & Token Revocation:
     Blacklists the caller's JWT ID so it cannot be reused.

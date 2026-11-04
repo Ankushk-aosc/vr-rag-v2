@@ -12,7 +12,7 @@ services/vector_index without other changes.
 import logging
 import threading
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 
@@ -89,26 +89,54 @@ def _tenant_matrix(family_entity_id: str) -> Tuple[List[Dict[str, Any]], Optiona
     return entries, matrix
 
 
+def _pgvector_candidates(query_vector: List[float], top_k: int, family_entity_id: str,
+                         allowed_document_ids: Optional[Iterable[str]]) -> Optional[List[Tuple[Dict[str, Any], float]]]:
+    """PostgreSQL + pgvector: the tenant and document filters are part of the SQL similarity query.
+    Returns None when pgvector is not available, so the caller uses the in-process path."""
+    repo = sqlite.get_local_index_repository()
+    search = getattr(repo, "search_chunk_vectors_pgvector", None)
+    if search is None or not repo.pgvector_enabled():
+        return None
+    rows = search(list(_normalise(query_vector)), family_entity_id,
+                  None if allowed_document_ids is None else sorted(allowed_document_ids), top_k)
+    return [({"chunk_id": r["chunk_id"], "document_id": r["document_id"],
+              "allowed_roles": set(r["allowed_roles"] or [])}, float(r["score"])) for r in rows]
+
+
 def query_similar_chunks(
     query_vector: List[float],
     top_k: int = 5,
     family_entity_id: str = "default_family",
     user_roles: Optional[List[str]] = None,
+    allowed_document_ids: Optional[Iterable[str]] = None,
 ) -> List[Dict[str, Any]]:
-    """Tenant and role filters are applied before scoring; unknown roles see nothing (fail closed)."""
+    """
+    Tenant, role and (when given) authorized-document filters are applied before scoring, so a chunk
+    outside the caller's scope is never ranked. Unknown roles or an empty scope see nothing.
+    """
     roles = set(user_roles or [])
     if not family_entity_id or not roles or top_k <= 0:
         return []
-    entries, matrix = _tenant_matrix(family_entity_id)
-    if matrix is None:
+    doc_filter = None if allowed_document_ids is None else set(allowed_document_ids)
+    if doc_filter is not None and not doc_filter:
         return []
-    allowed = np.array([bool(roles & e["allowed_roles"]) for e in entries])
-    if not allowed.any():
-        return []
-    candidate_idx = np.nonzero(allowed)[0]
-    scores = matrix[candidate_idx] @ _normalise(query_vector)
-    order = np.argsort(-scores)[:top_k]
-    picked = [(entries[candidate_idx[i]], float(scores[i])) for i in order]
+    picked = _pgvector_candidates(query_vector, top_k * 2, family_entity_id, doc_filter)
+    if picked is not None:
+        picked = [(e, s) for e, s in picked if roles & e["allowed_roles"]][:top_k]
+    else:
+        entries, matrix = _tenant_matrix(family_entity_id)
+        if matrix is None:
+            return []
+        allowed = np.array([
+            bool(roles & e["allowed_roles"]) and (doc_filter is None or e["document_id"] in doc_filter)
+            for e in entries
+        ])
+        if not allowed.any():
+            return []
+        candidate_idx = np.nonzero(allowed)[0]
+        scores = matrix[candidate_idx] @ _normalise(query_vector)
+        order = np.argsort(-scores)[:top_k]
+        picked = [(entries[candidate_idx[i]], float(scores[i])) for i in order]
 
     chunks = {c["id"]: c for c in sqlite.get_chunks_by_ids([e["chunk_id"] for e, _ in picked])}
     results = []
@@ -116,6 +144,8 @@ def query_similar_chunks(
         chunk = chunks.get(entry["chunk_id"])
         if not chunk or chunk.get("family_entity_id") != family_entity_id:
             continue  # deleted since the cache was built, or not this tenant's
+        if doc_filter is not None and chunk["document_id"] not in doc_filter:
+            continue
         page = int(chunk.get("page_number") or 1)
         results.append({
             "chunk_id": entry["chunk_id"],

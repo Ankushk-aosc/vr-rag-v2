@@ -55,8 +55,10 @@ class PgVectorStore(VectorStore):
                         page_no INT,
                         chunk_id VARCHAR(255),
                         metadata_json TEXT,
-                        embedding vector(1536)
+                        embedding vector(384)
                     );
+                    CREATE INDEX IF NOT EXISTS idx_document_vectors_hnsw
+                    ON document_vectors USING hnsw (embedding vector_cosine_ops);
                 """))
                 for vid, vec, meta in vectors:
                     meta_json = json.dumps({

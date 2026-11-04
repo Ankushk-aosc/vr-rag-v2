@@ -97,6 +97,9 @@ class DocumentModel(Base):
         String(36), ForeignKey("family_entities.id", ondelete="CASCADE"), nullable=False, index=True
     )
     status: Mapped[str] = mapped_column(String(50), default="indexed", nullable=False)
+    # ABAC attributes (migration 008): who uploaded it and its sensitivity tier
+    owner_user_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
+    classification: Mapped[str] = mapped_column(String(20), default="confidential", server_default="confidential", nullable=False)
     uploaded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -249,3 +252,47 @@ class DocumentMetaModel(Base):
         String(36), ForeignKey("family_entities.id", ondelete="CASCADE"), nullable=False, index=True
     )
     meta_json: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class ConversationModel(Base):
+    __tablename__ = "conversations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("family_entities.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    title: Mapped[str] = mapped_column(String(255), default="Financial Inquiry", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    messages = relationship("MessageModel", back_populates="conversation", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        Index("idx_conversations_tenant_user", "tenant_id", "user_id"),
+    )
+
+
+class MessageModel(Base):
+    __tablename__ = "messages"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    conversation_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    role: Mapped[str] = mapped_column(String(50), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    citations_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    conversation = relationship("ConversationModel", back_populates="messages")
+
+    __table_args__ = (
+        Index("idx_messages_conversation", "conversation_id"),
+    )

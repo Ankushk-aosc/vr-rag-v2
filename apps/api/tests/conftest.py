@@ -88,3 +88,23 @@ def cloud_mode(monkeypatch):
 def local_mode(monkeypatch):
     """Run a test with PRIVACY_MODE=local even if the environment opts in to cloud."""
     monkeypatch.setattr(settings, "PRIVACY_MODE", "local")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_test_sqlite(tmp_path, monkeypatch):
+    """Ensure every test runs against an isolated, clean SQLite database (no state leakage)."""
+    db_file = str(tmp_path / "test_isolated.db")
+    monkeypatch.setattr(settings, "SQLITE_DB_PATH", db_file)
+    from app.db import session as db_session
+    if db_session._engine is not None:
+        try:
+            db_session._engine.dispose()
+        except Exception:
+            pass
+    db_session._engine = None
+    db_session._sessionmaker = None
+    from app.db import sqlite
+    sqlite.init_db()
+    from app.middleware.rate_limiter import limiter
+    limiter.reset()
+

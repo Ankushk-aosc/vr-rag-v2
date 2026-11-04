@@ -2,7 +2,7 @@
 import { voiceStore } from "./voiceStore";
 import { vlog } from "./voiceLog";
 import { matchWakeWord, playWakeChime, stripWakeWord } from "./wakeWord";
-import { SpeechRecognitionCtor, getRecognitionCtor } from "./voiceConfig";
+import { SpeechRecognitionCtor, getRecognitionCtor, DEFAULT_LOCALE } from "./voiceConfig";
 import { VoiceEngineCore } from "./VoiceEngineCore";
 
 export abstract class VoiceRecognition extends VoiceEngineCore {
@@ -18,7 +18,7 @@ export abstract class VoiceRecognition extends VoiceEngineCore {
       const rec = new Ctor();
       rec.continuous = true;
       rec.interimResults = true;
-      rec.lang = (typeof navigator !== "undefined" && navigator.language) || "en-US";
+      rec.lang = (typeof navigator !== "undefined" && navigator.language) || DEFAULT_LOCALE;
       rec.maxAlternatives = 1;
       rec.onresult = (event: any) => {
         let interim = "";
@@ -40,7 +40,6 @@ export abstract class VoiceRecognition extends VoiceEngineCore {
         const full = `${this.finalText} ${this.interimText}`.trim();
 
         if (full) {
-          console.log("[Aether Voice Heard]:", full);
         }
 
         // 1. Passive Standby Mode: Looking for wake word ("Hey Aether", "Hey e", "he ET", "Hi", etc.)
@@ -49,7 +48,6 @@ export abstract class VoiceRecognition extends VoiceEngineCore {
             ? matchWakeWord(full)
             : matchWakeWord(this.interimText);
           if (match.matched) {
-            console.log("[Aether Wake Word Activated!]:", match.wakePhrase, match.query ? `(query: ${match.query})` : "");
             vlog("wake-word-detected", { phrase: match.wakePhrase, query: match.query });
 
             // Activate immediately!
@@ -97,7 +95,6 @@ export abstract class VoiceRecognition extends VoiceEngineCore {
             ? matchWakeWord(full)
             : matchWakeWord(this.interimText);
           if (match.matched) {
-            console.log("[Aether Interrupted by Wake Word!]:", match.wakePhrase, match.query ? `(query: ${match.query})` : "");
             this.interrupt("wake-word");
             this.ensureAudioContext().then((ctx) => playWakeChime(ctx)).catch(() => {});
             this.finalText = "";
@@ -119,27 +116,34 @@ export abstract class VoiceRecognition extends VoiceEngineCore {
         voiceStore.set({ interim: clean });
       };
       rec.onerror = (e: any) => {
-        if (e.error === "no-speech" || e.error === "aborted") return;
-        vlog("recogniser-error", { error: e.error });
-        console.warn("[Aether Voice] Speech recognition error:", e.error);
-
-        if (this.recognition === rec) {
-          this.recognition = null;
-        }
-
-        // In standby, wake-word mode, or active conversation, auto-recover from transient errors!
-        if (this.standby || voiceStore.get().wakeWordEnabled || this.inConversation) {
-          setTimeout(() => {
-            if ((this.standby || this.phase === "listening") && !this.finishing && !this.recognition) {
-              const Ctor = getRecognitionCtor();
-              if (Ctor) this.startRecognition(Ctor);
-            }
-          }, 500);
+        const errType = (e && e.error) || "unknown";
+        if (errType === "aborted") return;
+        if (errType === "no-speech") {
+          // In standby or active listening with no speech yet, let VAD continue
           return;
         }
 
+        vlog("recogniser-error", { error: errType });
+        console.warn("[Aether Voice] Speech recognition error:", errType);
+
+        if (this.recognition === rec) {
+          try {
+            rec.abort();
+          } catch {}
+          this.recognition = null;
+        }
+
+        // Handle not-allowed, network, audio-capture, service-not-allowed, unknown by falling back to Whisper
         this.recognitionFailed = true;
-        voiceStore.set({ sttEngine: "server" });
+        voiceStore.set({
+          sttEngine: "server",
+          statusText: "Browser recognition unavailable. Switching to Whisper…",
+        });
+
+        if (this.standby && !this.inConversation) {
+          this.standby = false;
+          voiceStore.set({ standby: false, phase: "idle" });
+        }
       };
       rec.onend = () => {
         // Clear instance reference as this instance has ended
@@ -148,9 +152,9 @@ export abstract class VoiceRecognition extends VoiceEngineCore {
         }
         // In Chrome, Web Speech terminates after ~30-60s of silence or utterance end.
         // Always instantiate a FRESH recognizer instance rather than calling start() on an ended instance!
-        if ((this.phase === "listening" || this.standby) && !this.finishing) {
+        if ((this.phase === "listening" || this.standby) && !this.finishing && !this.recognitionFailed) {
           setTimeout(() => {
-            if ((this.phase === "listening" || this.standby) && !this.finishing && !this.recognition) {
+            if ((this.phase === "listening" || this.standby) && !this.finishing && !this.recognition && !this.recognitionFailed) {
               const Ctor = getRecognitionCtor();
               if (Ctor) this.startRecognition(Ctor);
             }
@@ -191,4 +195,44 @@ export abstract class VoiceRecognition extends VoiceEngineCore {
     this.recorder.start(250);
   }
 
+
+  override setBrowserSpeechOptIn(optIn: boolean) {
+    super.setBrowserSpeechOptIn(optIn);
+    if (!optIn) {
+      if (this.recognition) {
+        try {
+          const old = this.recognition;
+          this.recognition = null;
+          old.abort();
+        } catch {}
+      }
+      voiceStore.set({ sttEngine: "server" });
+    } else {
+      const Ctor = getRecognitionCtor();
+      if (Ctor && (this.standby || this.phase === "listening") && !this.recognition) {
+        this.startRecognition(Ctor);
+        voiceStore.set({ sttEngine: "browser" });
+      }
+    }
+  }
+
+  override setSttMode(mode: "auto" | "server") {
+    super.setSttMode(mode);
+    if (mode === "server") {
+      if (this.recognition) {
+        try {
+          const old = this.recognition;
+          this.recognition = null;
+          old.abort();
+        } catch {}
+      }
+      voiceStore.set({ sttEngine: "server" });
+    } else {
+      const Ctor = getRecognitionCtor();
+      if (Ctor && (this.standby || this.phase === "listening") && !this.recognition) {
+        this.startRecognition(Ctor);
+        voiceStore.set({ sttEngine: "browser" });
+      }
+    }
+  }
 }

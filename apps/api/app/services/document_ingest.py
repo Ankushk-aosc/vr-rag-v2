@@ -53,7 +53,8 @@ async def process_single_upload(
     file: UploadFile,
     family_entity_id: str = "default_family",
     allowed_role: str = "family_member",
-    user_id: Optional[str] = None
+    user_id: Optional[str] = None,
+    classification: Optional[str] = None,
 ) -> DocumentUploadResponse:
     """
     Sovereign Document Ingestion:
@@ -222,6 +223,9 @@ async def process_single_upload(
         "total_pages": total_pages,
         "family_entity_id": family_entity_id,
         "status": "pending",
+        # Set server-side from the authenticated caller and the authorized classification
+        "owner_user_id": user_id,
+        "classification": classification or ("restricted" if allowed_role == "family_admin" else "confidential"),
         "uploaded_at": datetime.now(timezone.utc).isoformat(),
         "columns": extracted_columns,
         "sample_rows": extracted_sample_rows,

@@ -4,13 +4,15 @@
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     container_name: vr_rag_postgres
     restart: unless-stopped
     environment:
       # Administrative superuser: used only by docker/postgres/init-app-role.sh, never by the API
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?set POSTGRES_ADMIN_PASSWORD in .env}
+      MIGRATION_DB_USER: ${MIGRATION_DB_USER:-vrrag_owner}
+      MIGRATION_DB_PASSWORD: ${MIGRATION_DB_PASSWORD:?set MIGRATION_DB_PASSWORD in .env}
       APP_DB_USER: ${APP_DB_USER:-vrrag_app}
       APP_DB_PASSWORD: ${APP_DB_PASSWORD:?set APP_DB_PASSWORD in .env}
       APP_DB_NAME: ${APP_DB_NAME:-vr_rag}
@@ -35,7 +37,7 @@ services:
       ENVIRONMENT: ${ENVIRONMENT:-development}
       APP_SECRET_KEY: ${APP_SECRET_KEY:?set APP_SECRET_KEY in .env}
       # Non-superuser role, so PostgreSQL row-level security applies; migrations run at startup
-      DATABASE_URL: postgresql+psycopg://${APP_DB_USER:-vrrag_app}:${APP_DB_PASSWORD}@postgres:5432/${APP_DB_NAME:-vr_rag}
+      DATABASE_URL: postgresql+psycopg://${APP_DB_USER:-vrrag_app}:${APP_DB_PASSWORD:?set APP_DB_PASSWORD in .env}@postgres:5432/${APP_DB_NAME:-vr_rag}
       PRIVACY_MODE: ${PRIVACY_MODE:-local}
       LLM_PROVIDER: ${LLM_PROVIDER:-local}
       # 127.0.0.1 inside a container is the container itself, so this has its own variable

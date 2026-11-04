@@ -147,7 +147,7 @@ def test_readonly_adviser_upload_denied():
             headers={"Authorization": f"Bearer {user_adviser_token}"}
         )
         assert res.status_code == 403
-        assert "Read-only advisers are not permitted to upload documents." in res.json()["detail"]
+        assert res.json()["detail"] == "Access denied."  # generic: denials never explain what exists
 
 
 @pytest.mark.usefixtures("cloud_mode")

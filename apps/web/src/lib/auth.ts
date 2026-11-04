@@ -70,6 +70,7 @@ export async function login(email: string, password: string): Promise<AuthRespon
   const res = await fetch(`${API_BASE_URL}/api/auth/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    credentials: "include",
     body: JSON.stringify({ email, password }),
   });
 
@@ -88,17 +89,19 @@ export async function register(
   email: string,
   password: string,
   fullName: string,
-  familyEntityName?: string
+  familyEntityName?: string,
+  inviteToken?: string
 ): Promise<AuthResponse> {
+  // With an invite the server places the user in the inviting family; otherwise it creates a new one
   const res = await fetch(`${API_BASE_URL}/api/auth/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      email,
-      password,
-      full_name: fullName,
-      family_entity_name: familyEntityName || `${fullName}'s Family Trust`,
-    }),
+    credentials: "include",
+    body: JSON.stringify(
+      inviteToken
+        ? { email, password, full_name: fullName, invite_token: inviteToken }
+        : { email, password, full_name: fullName, family_entity_name: familyEntityName || `${fullName}'s Family Trust` }
+    ),
   });
 
   if (!res.ok) {
@@ -113,12 +116,10 @@ export async function register(
 }
 
 export async function fetchCurrentUser(): Promise<UserProfile | null> {
-  const token = getAuthToken();
-  if (!token) return null;
-
   try {
     const res = await fetch(`${API_BASE_URL}/api/auth/me`, {
       headers: getAuthHeaders(),
+      credentials: "include",
     });
 
     if (!res.ok) {
@@ -143,6 +144,7 @@ export async function logout(): Promise<void> {
       await fetch(`${API_BASE_URL}/api/auth/logout`, {
         method: "POST",
         headers: getAuthHeaders(),
+        credentials: "include",
       });
     } catch {
       // Ignore network errors on logout
@@ -181,3 +183,23 @@ export async function deleteAccount(): Promise<{ message: string }> {
   return await res.json();
 }
 
+
+export async function refreshSession(): Promise<AuthResponse | null> {
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/auth/refresh`, {
+      method: "POST",
+      headers: getAuthHeaders(),
+      credentials: "include",
+    });
+    if (!res.ok) {
+      if (res.status === 401) await logout();
+      return null;
+    }
+    const data: AuthResponse = await res.json();
+    setAuthToken(data.access_token);
+    setStoredUser(data.user);
+    return data;
+  } catch {
+    return null;
+  }
+}

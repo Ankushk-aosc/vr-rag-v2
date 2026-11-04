@@ -236,8 +236,11 @@ export function SpatialScene({
     ro.observe(container);
 
     return () => {
+      // Leaving the room must also release the headset
+      renderer.xr.getSession()?.end().catch(() => {});
       renderer.setAnimationLoop(null);
       ro.disconnect();
+      if (process.env.NODE_ENV !== "production") delete (window as any).__spatialDebug;
       window.removeEventListener("deviceorientation", onOrientation);
       renderer.xr.removeEventListener("sessionstart", onSessionStart);
       renderer.xr.removeEventListener("sessionend", onSessionEnd);
@@ -259,31 +262,25 @@ export function SpatialScene({
     <div className="relative w-full h-full overflow-hidden select-none">
       <div ref={containerRef} className="w-full h-full" />
 
-      <FloatingPanel
-        id="scene-tips"
-        theme={theme}
-        resize="none"
-        minW={220}
-        minH={40}
-        defaultRect={(vw) => ({ x: 24, y: 112, w: Math.min(330, vw - 48), h: 40 })}
-      >
-        <div
-          data-drag-handle
-          className={`w-full h-full flex items-center gap-2 px-3.5 rounded-full border text-[11px] font-medium cursor-grab active:cursor-grabbing touch-none ${
-            isLight ? "bg-white border-black/10 text-black/70 shadow-sm" : "bg-[#141418] border-white/10 text-white/70 shadow-lg"
-          }`}
+      {/* Subtle enterprise workspace layer */}
+      <div
+        className={`pointer-events-none absolute inset-0 transition-opacity ${
+          isLight ? "bg-gradient-to-b from-white/20 via-transparent to-slate-100/40" : "bg-gradient-to-b from-black/20 via-transparent to-black/40"
+        }`}
+      />
+
+      {/* Discreet 3D interaction hint */}
+      <div className="absolute bottom-5 left-5 z-20 hidden lg:flex items-center gap-2 px-3 py-1.5 rounded-lg border text-[11px] font-medium backdrop-blur-md transition-all shadow-sm bg-white/90 dark:bg-slate-900/90 border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300">
+        <Move3d className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 flex-shrink-0" />
+        <span>Spatial Workspace • Drag to inspect 3D items</span>
+        <button
+          onClick={() => spatialLayout.reset()}
+          title="Reset 3D layout"
+          className="ml-1 p-0.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400 hover:text-slate-700 dark:hover:text-white"
         >
-          <Move3d className="w-3.5 h-3.5 text-[#8B5CF6] flex-shrink-0 pointer-events-none" />
-          <span className="truncate pointer-events-none">Drag any panel, orb or document • scroll to push/pull</span>
-          <button
-            onClick={() => spatialLayout.reset()}
-            title="Reset 3D layout"
-            className={`ml-auto p-1 rounded-full flex-shrink-0 ${isLight ? "hover:bg-black/5" : "hover:bg-white/10"}`}
-          >
-            <RotateCcw className="w-3 h-3" />
-          </button>
-        </div>
-      </FloatingPanel>
+          <RotateCcw className="w-3 h-3" />
+        </button>
+      </div>
 
       {(hasGyro || canRequestMotion) && (
         <div className="absolute top-28 right-6 z-20">

@@ -1,8 +1,7 @@
 "use client";
 
-import React, { useRef, useState } from "react";
-import { Mic, Send, Sparkles, ArrowUpRight, X, Square, Loader2, CornerDownLeft, Hand } from "lucide-react";
-import { FloatingPanel } from "./FloatingPanel";
+import React, { useEffect, useRef, useState } from "react";
+import { Mic, Send, X, Square, CornerDownLeft, Hand, Loader2 } from "lucide-react";
 import { LevelBars } from "./LevelBars";
 import { VoiceSettings } from "./VoiceSettings";
 import { useVoiceSnapshot } from "../lib/voice/voiceStore";
@@ -23,257 +22,234 @@ export interface AetherCommandBarProps {
   onInterrupt: () => void;
   onSetBargeIn: (on: boolean) => void;
   onSetSttMode: (mode: "auto" | "server") => void;
+  onSetBrowserSpeechOptIn?: (optIn: boolean) => void;
+  onSetWakeWord?: (on: boolean) => void;
   onTestSpeaker: () => void;
+  /** "floating": docked at the bottom of the viewport. "inline": part of the page (dashboard). */
+  variant?: "floating" | "inline";
+  autoFocus?: boolean;
 }
-
-const DEFAULT_PROMPTS = [
-  "Summarise uploaded financial statements",
-  "Compare portfolio balances across periods",
-  "Extract tax distributions & franking credits",
-];
 
 export function AetherCommandBar({
   onSendMessage,
   onStopGenerating,
   isProcessing,
-  hasMessages,
-  onToggleDialogue,
-  isDialogueOpen,
   theme = "light",
-  prompts,
   onToggleVoice,
   onFinishUtterance,
   onInterrupt,
   onSetBargeIn,
   onSetSttMode,
+  onSetBrowserSpeechOptIn,
+  onSetWakeWord,
   onTestSpeaker,
+  variant = "floating",
+  autoFocus = false,
 }: AetherCommandBarProps) {
   const [inputText, setInputText] = useState("");
-  const inputRef = useRef<HTMLInputElement | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const voice = useVoiceSnapshot();
   const isLight = theme === "light";
-  const quickPrompts = prompts && prompts.length > 0 ? prompts : DEFAULT_PROMPTS;
   const voiceOn = voice.conversation;
+  const inline = variant === "inline";
 
-  const handleSubmit = (e?: React.FormEvent) => {
-    e?.preventDefault();
-    if (!inputText.trim() || isProcessing) return;
-    onSendMessage(inputText.trim());
+  useEffect(() => {
+    if (autoFocus) inputRef.current?.focus();
+  }, [autoFocus]);
+
+  // Grow with the text up to a few lines
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, inline ? 160 : 120)}px`;
+  }, [inputText, inline]);
+
+  // Set synchronously so two Enter presses in the same frame (before isProcessing re-renders) send once
+  const submittingRef = useRef(false);
+  const submit = () => {
+    const text = inputText.trim();
+    if (!text || isProcessing || submittingRef.current) return;
+    submittingRef.current = true;
+    setTimeout(() => (submittingRef.current = false), 300);
+    onSendMessage(text);
     setInputText("");
   };
 
-  const muted = isLight ? "text-black/55" : "text-white/55";
+  const muted = isLight ? "text-slate-500" : "text-slate-400";
 
-  const voiceCenter = () => {
+  const voiceStatus = () => {
     switch (voice.phase) {
-      case "listening":
+      case "listening": {
+        const switching = !!voice.statusText?.includes("Switching to Whisper");
+        const text = switching
+          ? "Browser recognition failed. Switching to Whisper…"
+          : voice.interim
+          ? `“${voice.interim}”`
+          : "Listening…";
         return (
-          <div className="flex-1 flex items-center gap-3 px-3 min-w-0">
+          <>
             <LevelBars source="mic" bars={7} />
-            <span className={`text-[13px] truncate ${voice.interim ? (isLight ? "text-[#4C1D95]" : "text-[#DDD6FE]") : muted}`}>
-              {voice.interim ? `“${voice.interim}”` : "Listening… just start talking"}
+            <span className={`text-[14px] truncate ${voice.interim ? (isLight ? "text-slate-900" : "text-white") : muted}`}>{text}</span>
+            <span className={`hidden md:inline text-[12px] flex-shrink-0 ${muted}`}>
+              {switching || voice.sttEngine !== "browser" ? "Whisper" : "Browser"}
             </span>
-            <span className={`hidden md:inline text-[10px] flex-shrink-0 ${muted}`}>
-              {voice.sttEngine === "browser" ? "browser STT" : "Whisper"}
-            </span>
-          </div>
+          </>
         );
+      }
       case "transcribing":
         return (
-          <div className={`flex-1 flex items-center gap-2 px-3 text-[13px] ${muted}`}>
-            <Loader2 className="w-3.5 h-3.5 animate-spin" /> Transcribing…
-          </div>
+          <>
+            <Loader2 className="w-4 h-4 animate-spin text-blue-600" aria-hidden />
+            <span className={`text-[14px] ${muted}`}>Transcribing…</span>
+          </>
         );
       case "thinking":
         return (
-          <div className={`flex-1 flex items-center gap-2 px-3 text-[13px] min-w-0 ${muted}`}>
-            <Sparkles className="w-3.5 h-3.5 animate-pulse text-[#8B5CF6] flex-shrink-0" />
-            <span className="truncate">Thinking about “{voice.interim}”</span>
-          </div>
+          <>
+            <Loader2 className="w-4 h-4 animate-spin text-blue-600" aria-hidden />
+            <span className={`text-[14px] ${muted}`}>Searching authorised records…</span>
+          </>
         );
       case "speaking":
         return (
-          <div className={`flex-1 flex items-center gap-3 px-3 text-[13px] ${muted}`}>
+          <>
             <LevelBars source="output" bars={7} />
-            <span className="truncate">{voice.bargeIn ? "Speaking — talk to interrupt" : "Speaking — press Interrupt to stop"}</span>
-          </div>
+            <span className={`text-[14px] ${muted}`}>Speaking…</span>
+          </>
         );
       default:
-        return <div className={`flex-1 px-3 text-[13px] ${muted}`}>Starting microphone…</div>;
+        return <span className={`text-[14px] ${muted}`}>{voice.error || "Starting microphone…"}</span>;
     }
   };
 
-  return (
-    <FloatingPanel
-      id="command-bar"
-      theme={theme}
-      resize="x"
-      showGrip
-      minW={340}
-      minH={56}
-      ariaLabel="Command bar"
-      defaultRect={(vw, vh) => {
-        const w = Math.min(672, vw - 32);
-        return { x: (vw - w) / 2, y: vh - (hasMessages ? 88 : 132), w, h: 56 };
-      }}
-    >
-      <div className="relative w-full flex flex-col items-center">
-        {!voiceOn && !hasMessages && (
-          <div className="absolute bottom-full mb-3 w-full flex flex-wrap items-center justify-center gap-2">
-            {quickPrompts.map((prompt, idx) => (
-              <button
-                key={idx}
-                onClick={() => {
-                  setInputText(prompt);
-                  inputRef.current?.focus();
-                }}
-                className={`text-[11px] px-3.5 py-1.5 rounded-full border transition-all shadow-md flex items-center space-x-1.5 ${
-                  isLight
-                    ? "bg-white hover:bg-white text-black/75 hover:text-black border-black/10"
-                    : "bg-[#16161C] hover:bg-[#1C1C24] text-white/70 hover:text-white border-white/10"
-                }`}
-              >
-                <span>{prompt}</span>
-                <ArrowUpRight className={`w-3 h-3 ${isLight ? "text-[#6D28D9]" : "text-[#A78BFA]"}`} />
-              </button>
-            ))}
-          </div>
-        )}
+  const iconBtn = "w-9 h-9 rounded-md flex items-center justify-center flex-shrink-0 transition-colors";
 
-        <div className="relative w-full group">
-          <div
-            className={`absolute -inset-1 rounded-full blur-xl transition-all duration-700 pointer-events-none ${
-              voiceOn
-                ? "opacity-70 aether-wave-gradient"
-                : isProcessing
-                ? "opacity-50 bg-gradient-to-r from-[#6D28D9] via-[#8B5CF6] to-[#D4AF37] animate-pulse"
-                : "opacity-0"
+  const bar = (
+    <div
+      className={`w-full flex items-end gap-1.5 p-2 rounded-lg border ${
+        isLight ? "bg-white border-slate-300 text-slate-900" : "bg-[#0F172A] border-slate-700 text-white"
+      } ${inline ? "shadow-sm focus-within:border-blue-500 focus-within:ring-2 focus-within:ring-blue-100" : "shadow-lg"}`}
+    >
+      {voiceOn ? (
+        <div className="flex-1 flex items-center gap-3 px-2 min-h-[36px] min-w-0" role="status" aria-live="polite">
+          {voiceStatus()}
+        </div>
+      ) : (
+        <form
+          className="flex-1 min-w-0"
+          onSubmit={(e) => {
+            e.preventDefault();
+            submit();
+          }}
+        >
+          <label htmlFor={`ask-aether-${variant}`} className="sr-only">
+            Ask Aether
+          </label>
+          <textarea
+            id={`ask-aether-${variant}`}
+            ref={inputRef}
+            rows={1}
+            value={inputText}
+            onChange={(e) => setInputText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                submit();
+              }
+            }}
+            placeholder="What would you like to understand?"
+            className={`block w-full resize-none bg-transparent px-2 py-2 text-[14px] leading-5 focus:outline-none ${
+              isLight ? "placeholder-slate-400" : "placeholder-slate-500"
             }`}
           />
-          <div
-            data-drag-handle
-            className={`relative z-10 w-full flex items-center px-2.5 py-2 rounded-full border transition-colors ${
-              isLight ? "bg-white border-black/10 shadow-lg text-black" : "bg-[#16161C] border-white/15 shadow-2xl text-white"
+        </form>
+      )}
+
+      <div className="flex items-center gap-1 flex-shrink-0">
+        {voiceOn && voice.phase === "listening" && voice.interim && (
+          <button
+            type="button"
+            onClick={onFinishUtterance}
+            className={`h-9 px-3 rounded-md text-[13px] font-medium flex items-center gap-1.5 ${
+              isLight ? "bg-slate-100 text-slate-800 hover:bg-slate-200" : "bg-slate-800 text-slate-100"
             }`}
           >
+            <CornerDownLeft className="w-3.5 h-3.5" aria-hidden /> Send
+          </button>
+        )}
+        {voiceOn && voice.phase === "speaking" && (
+          <button
+            type="button"
+            onClick={onInterrupt}
+            className={`h-9 px-3 rounded-md text-[13px] font-medium flex items-center gap-1.5 ${
+              isLight ? "bg-slate-100 text-slate-800 hover:bg-slate-200" : "bg-slate-800 text-slate-100"
+            }`}
+          >
+            <Hand className="w-3.5 h-3.5" aria-hidden /> Interrupt
+          </button>
+        )}
+
+        <VoiceSettings
+          theme={theme}
+          placement={inline ? "below" : "above"}
+          onSetBargeIn={onSetBargeIn}
+          onSetSttMode={onSetSttMode}
+          onSetBrowserSpeechOptIn={onSetBrowserSpeechOptIn}
+          onSetWakeWord={onSetWakeWord}
+          onTestSpeaker={onTestSpeaker}
+        />
+
+        <button
+          type="button"
+          onClick={onToggleVoice}
+          aria-label={voiceOn ? "End voice conversation" : "Ask by voice"}
+          aria-pressed={voiceOn}
+          title={voiceOn ? "End voice conversation" : "Ask by voice"}
+          className={`${iconBtn} ${
+            voiceOn
+              ? "bg-rose-600 text-white hover:bg-rose-700"
+              : isLight
+              ? "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+              : "text-slate-300 hover:bg-slate-800"
+          }`}
+        >
+          {voiceOn ? <X className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+        </button>
+
+        {!voiceOn &&
+          (isProcessing ? (
             <button
               type="button"
-              onClick={onToggleVoice}
-              aria-label={voiceOn ? "End voice conversation" : "Start voice conversation"}
-              title={voiceOn ? "End voice mode" : "Voice mode — talk hands-free, like ChatGPT/Claude voice"}
-              className={`w-10 h-10 rounded-full flex items-center justify-center transition-all flex-shrink-0 ${
-                voiceOn
-                  ? "bg-red-500 text-white shadow-md"
+              onClick={onStopGenerating}
+              aria-label="Stop generating"
+              title="Stop generating"
+              className={`${iconBtn} border ${isLight ? "border-slate-300 text-slate-700 hover:bg-slate-100" : "border-slate-600 text-slate-200 hover:bg-slate-800"}`}
+            >
+              <Square className="w-3.5 h-3.5 fill-current" />
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={submit}
+              disabled={!inputText.trim()}
+              aria-label="Send question"
+              className={`${iconBtn} ${
+                inputText.trim()
+                  ? "bg-[#2563EB] text-white hover:bg-[#1D4ED8]"
                   : isLight
-                  ? "bg-[#6D28D9]/10 hover:bg-[#6D28D9]/20 text-[#6D28D9] hover:scale-105"
-                  : "bg-white/10 hover:bg-white/15 text-[#A78BFA] hover:scale-105"
+                  ? "bg-slate-100 text-slate-400 cursor-not-allowed"
+                  : "bg-slate-800 text-slate-600 cursor-not-allowed"
               }`}
             >
-              {voiceOn ? <X className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+              <Send className="w-4 h-4" />
             </button>
-
-            {voiceOn ? (
-              voiceCenter()
-            ) : (
-              <form onSubmit={handleSubmit} className="flex-1 flex items-center px-3">
-                <input
-                  ref={inputRef}
-                  type="text"
-                  value={inputText}
-                  onChange={(e) => setInputText(e.target.value)}
-                  placeholder="Ask about your financial documents…"
-                  className={`w-full bg-transparent text-sm focus:outline-none ${
-                    isLight ? "text-black placeholder-black/40" : "text-white placeholder-white/40"
-                  }`}
-                />
-              </form>
-            )}
-
-            <div className="flex items-center gap-2 flex-shrink-0">
-              <VoiceSettings
-                theme={theme}
-                onSetBargeIn={onSetBargeIn}
-                onSetSttMode={onSetSttMode}
-                onTestSpeaker={onTestSpeaker}
-              />
-              {voiceOn && voice.phase === "listening" && voice.interim && (
-                <button
-                  type="button"
-                  onClick={onFinishUtterance}
-                  title="Send now"
-                  className={`px-3 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1 ${
-                    isLight ? "bg-[#6D28D9]/10 text-[#6D28D9]" : "bg-[#7C3AED]/20 text-[#C4B5FD]"
-                  }`}
-                >
-                  <CornerDownLeft className="w-3 h-3" /> Send
-                </button>
-              )}
-              {voiceOn && voice.phase === "speaking" && (
-                <button
-                  type="button"
-                  onClick={onInterrupt}
-                  title="Interrupt and speak"
-                  className={`px-3 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1 ${
-                    isLight ? "bg-black/5 text-black/70" : "bg-white/10 text-white/80"
-                  }`}
-                >
-                  <Hand className="w-3 h-3" /> Interrupt
-                </button>
-              )}
-              {!voiceOn &&
-                (isProcessing ? (
-                  <button
-                    type="button"
-                    onClick={onStopGenerating}
-                    aria-label="Stop generating"
-                    title="Stop generating"
-                    className={`w-9 h-9 rounded-full flex items-center justify-center ${
-                      isLight ? "bg-black text-white" : "bg-white text-black"
-                    }`}
-                  >
-                    <Square className="w-3 h-3 fill-current" />
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => handleSubmit()}
-                    disabled={!inputText.trim()}
-                    aria-label="Submit inquiry"
-                    className={`w-9 h-9 rounded-full flex items-center justify-center transition-all active:scale-95 shadow-md ${
-                      isLight
-                        ? "bg-[#581C87] text-white hover:bg-[#4C1D95] disabled:opacity-30"
-                        : "bg-white text-black hover:bg-white/90 disabled:opacity-30"
-                    }`}
-                  >
-                    <Send className="w-4 h-4" />
-                  </button>
-                ))}
-              {hasMessages && (
-                <button
-                  type="button"
-                  onClick={onToggleDialogue}
-                  className={`hidden sm:block px-3 py-1.5 rounded-full text-xs font-medium border transition-all ${
-                    isDialogueOpen
-                      ? isLight
-                        ? "bg-[#6D28D9]/15 text-[#6D28D9] border-[#6D28D9]/30"
-                        : "bg-[#7C3AED]/20 text-[#A78BFA] border-[#7C3AED]/40"
-                      : isLight
-                      ? "bg-black/5 hover:bg-black/10 text-black/80 border-black/10"
-                      : "bg-white/5 hover:bg-white/10 text-white/80 border-white/10"
-                  }`}
-                >
-                  {isDialogueOpen ? "Hide" : "Show"} Dialogue
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-        {voice.error && (
-          <p className="absolute top-full mt-2 text-[11px] px-3 py-1 rounded-full bg-red-500/10 text-red-600 border border-red-500/30 max-w-full truncate">
-            {voice.error}
-          </p>
-        )}
+          ))}
       </div>
-    </FloatingPanel>
+    </div>
   );
+
+  if (inline) return bar;
+
+  return <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 w-full max-w-2xl px-4">{bar}</div>;
 }

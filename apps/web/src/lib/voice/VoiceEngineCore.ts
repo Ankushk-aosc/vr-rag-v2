@@ -8,7 +8,7 @@ import { AdaptiveVad } from "../vad";
 import { cloudSpeechAllowed, liveLevels, voiceStore } from "./voiceStore";
 import { SentenceChunker, toSpeakable } from "./speechText";
 import { vlog } from "./voiceLog";
-import { QueuedSpeech, StoredSettings, TICK_MS, TTS_PREFETCH, TTS_TIMEOUT_MS, readSettings, writeSettings } from "./voiceConfig";
+import { QueuedSpeech, StoredSettings, TICK_MS, TTS_PREFETCH, TTS_TIMEOUT_MS, readSettings, writeSettings, DEFAULT_LOCALE } from "./voiceConfig";
 
 export interface VoiceEngineHandlers {
   /** A finished user utterance. The page should run the query and feed the answer back. */
@@ -74,7 +74,9 @@ export abstract class VoiceEngineCore {
       voiceStore.set({
         bargeIn: this.settingsExplicit.bargeIn ?? false,
         sttMode: this.settingsExplicit.sttMode ?? "auto",
-        wakeWordEnabled: this.settingsExplicit.wakeWordEnabled ?? true,
+        // Wake word is opt-in: it keeps the mic open and needs browser (possibly third-party) recognition
+        wakeWordEnabled: this.settingsExplicit.wakeWordEnabled ?? false,
+        browserSpeechOptIn: this.settingsExplicit.browserSpeechOptIn ?? false,
       });
     }
   }
@@ -125,6 +127,18 @@ export abstract class VoiceEngineCore {
       if (this.standby && !this.inConversation) {
         this.endConversation("wake-word-disabled", true);
       }
+    }
+  }
+
+  setBrowserSpeechOptIn(optIn: boolean) {
+    this.settingsExplicit = { ...this.settingsExplicit, browserSpeechOptIn: optIn };
+    writeSettings(this.settingsExplicit);
+    this.recognitionFailed = false;
+    voiceStore.set({ browserSpeechOptIn: optIn });
+    vlog("setting", { browserSpeechOptIn: optIn });
+    // Withdrawing consent stops any passive browser recognition immediately
+    if (!optIn && this.standby && !this.inConversation) {
+      this.endConversation("browser-speech-opt-out", true);
     }
   }
 
@@ -421,13 +435,13 @@ export abstract class VoiceEngineCore {
       if (!synth || gen !== this.generation) return resolve();
       // Outside cloud mode only on-device voices may read answers aloud (remote voices send the text away)
       const voices = synth.getVoices().filter((v) => cloudSpeechAllowed() || v.localService);
-      const voice = voices.find((v) => v.lang === "en-AU") || voices.find((v) => v.lang.startsWith("en")) || null;
+      const voice = voices.find((v) => v.lang === DEFAULT_LOCALE) || voices.find((v) => v.lang.startsWith("en")) || null;
       if (!voice && !cloudSpeechAllowed()) {
         vlog("tts-browser-skipped", { reason: "no-on-device-voice" });
         return resolve();
       }
       const utter = new SpeechSynthesisUtterance(text);
-      if (typeof window !== "undefined") (window as any).__aetherUtterance = utter;
+      if (process.env.NODE_ENV !== "production" && typeof window !== "undefined") (window as any).__aetherUtterance = utter;
       utter.voice = voice;
       utter.rate = 1.03;
       let doneCalled = false;
@@ -457,7 +471,6 @@ export abstract class VoiceEngineCore {
     this.audible = false;
     this.currentSource = null;
     voiceStore.set({ readingAloud: false });
-    console.log("[Aether Finished Speaking -> Returning to Standby]");
     this.listenStandby();
   }
 

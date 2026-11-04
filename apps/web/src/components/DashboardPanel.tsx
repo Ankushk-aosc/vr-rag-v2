@@ -62,7 +62,7 @@ export function DashboardPanel({
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0 pointer-events-none">
               <div className="flex items-center gap-2">
-                <BarChart3 className={`w-4 h-4 flex-shrink-0 ${isLight ? "text-[#6D28D9]" : "text-[#C4B5FD]"}`} />
+                <BarChart3 className={`w-4 h-4 flex-shrink-0 ${isLight ? "text-slate-500" : "text-slate-400"}`} />
                 <h3 className="text-sm font-semibold truncate">{active.title}</h3>
               </div>
               {active.subtitle && (
@@ -77,7 +77,7 @@ export function DashboardPanel({
                 onClick={onViewIn3D}
                 title="Show this dashboard in the 3D room / VR"
                 className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold ${
-                  isLight ? "bg-[#6D28D9] text-white hover:bg-[#5B21B6]" : "bg-[#7C3AED] text-white hover:bg-[#6D28D9]"
+                  "bg-[#2563EB] text-white hover:bg-[#1D4ED8]"
                 }`}
               >
                 <Box className="w-3.5 h-3.5" /> View in 3D

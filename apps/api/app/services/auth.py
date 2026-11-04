@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 import jwt
-from fastapi import Depends, HTTPException, Security, status
+from fastapi import Cookie, Depends, HTTPException, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from app.config import settings
 from app.services import pinecone_service
@@ -154,11 +154,13 @@ def decode_invite_token(token: str) -> Dict[str, Any]:
 
 
 async def get_current_user_optional(
-    auth_cred: Optional[HTTPAuthorizationCredentials] = Security(security)
+    auth_cred: Optional[HTTPAuthorizationCredentials] = Security(security),
+    aether_session: Optional[str] = Cookie(default=None),
 ) -> Optional[Dict[str, Any]]:
-    if not auth_cred:
+    raw_token = auth_cred.credentials if auth_cred else aether_session
+    if not raw_token:
         return None
-    payload = decode_access_token(auth_cred.credentials)
+    payload = decode_access_token(raw_token)
     # Invite (or any other typed) tokens must never authenticate API calls
     if payload.get("typ") not in (None, "access"):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authorization token.")
@@ -199,17 +201,13 @@ async def get_current_user_optional(
 
 
 async def get_current_user(
-    auth_cred: Optional[HTTPAuthorizationCredentials] = Security(security)
+    auth_cred: Optional[HTTPAuthorizationCredentials] = Security(security),
+    aether_session: Optional[str] = Cookie(default=None),
 ) -> Dict[str, Any]:
-    if not auth_cred:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required. Please provide a valid Bearer token."
-        )
-    user = await get_current_user_optional(auth_cred)
+    user = await get_current_user_optional(auth_cred=auth_cred, aether_session=aether_session)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User account not found or invalid token."
+            detail="Authentication required. Please provide a valid session or Bearer token."
         )
     return user

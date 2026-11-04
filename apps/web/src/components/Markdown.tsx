@@ -3,6 +3,7 @@
 import React, { memo } from "react";
 import ReactMarkdown, { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { citationLocation } from "../lib/citations";
 import { CitationItem } from "../types";
 
 interface MarkdownProps {
@@ -28,15 +29,18 @@ function MarkdownImpl({ text, citations = [], onCitationClick, theme = "light", 
       if (href?.startsWith("#cite-")) {
         const ref = Number(href.slice(6));
         const c = byRef.get(ref);
+        // Only markers that match a citation the backend returned become links; others stay plain text
+        if (!c) return <span>[{ref}]</span>;
         return (
           <button
             type="button"
-            onClick={() => c && onCitationClick?.(c)}
-            title={c ? `${c.document_name} • page ${c.page_number}` : `Source ${ref}`}
-            className={`inline-flex items-center justify-center align-baseline mx-0.5 min-w-[1.25rem] h-[1.15rem] px-1 rounded-md text-[10px] font-semibold font-mono transition-colors ${
+            onClick={() => onCitationClick?.(c)}
+            title={`${c.document_name} · ${citationLocation(c)}`}
+            aria-label={`Source ${ref}: ${c.document_name}, ${citationLocation(c)}`}
+            className={`inline-flex items-center justify-center align-baseline mx-0.5 min-w-[1.25rem] h-[1.15rem] px-1 rounded text-[10px] font-semibold font-mono transition-colors ${
               isLight
-                ? "bg-[#D4AF37]/15 text-[#8A6D12] hover:bg-[#D4AF37]/30"
-                : "bg-[#D4AF37]/20 text-[#E8C860] hover:bg-[#D4AF37]/35"
+                ? "bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200"
+                : "bg-blue-950/60 text-blue-300 hover:bg-blue-900 border border-blue-800"
             }`}
           >
             {ref}
@@ -66,7 +70,7 @@ function MarkdownImpl({ text, citations = [], onCitationClick, theme = "light", 
     h3: ({ children }) => (
       <h4
         className={`text-[11px] font-semibold uppercase tracking-wider mt-3.5 mb-1.5 ${
-          isLight ? "text-[#6D28D9]" : "text-[#C4B5FD]"
+          isLight ? "text-slate-500" : "text-slate-400"
         }`}
       >
         {children}
@@ -88,7 +92,7 @@ function MarkdownImpl({ text, citations = [], onCitationClick, theme = "light", 
       </div>
     ),
     thead: ({ children }) => (
-      <thead className={isLight ? "bg-[#6D28D9]/[0.06]" : "bg-white/[0.05]"}>{children}</thead>
+      <thead className={isLight ? "bg-slate-50" : "bg-white/[0.05]"}>{children}</thead>
     ),
     th: ({ children }) => (
       <th

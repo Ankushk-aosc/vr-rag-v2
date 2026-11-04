@@ -186,7 +186,7 @@ def test_document_deletion_denied_for_non_admin_and_wrong_tenant():
     member_a_token = auth.create_access_token({"sub": member_a_id, "email": "member_a@example.com"})
     res_member = client.delete(f"/api/documents/{doc_a_id}", headers={"Authorization": f"Bearer {member_a_token}"})
     assert res_member.status_code == 403
-    assert "Only family_admin" in res_member.json()["detail"]
+    assert res_member.json()["detail"] == "Access denied."  # generic denial (no policy detail leaked)
 
     # User in Family B attempts delete -> 403 Forbidden
     user_b_token = auth.create_access_token({"sub": user_b_id, "email": "user_b@example.com"})

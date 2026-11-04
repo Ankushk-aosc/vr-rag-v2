@@ -18,9 +18,9 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Aether Sovereign | Spatial Financial Pavilion",
+  title: "Aether Sovereign — Family Office Financial Intelligence",
   description:
-    "Aether Sovereign: Sovereign voice-first spatial financial intelligence pavilion for Australian family offices with stereoscopic VR WebXR spatial computing.",
+    "Evidence-grounded financial intelligence for Australian family offices, with optional spatial and VR views.",
   icons: {
     icon: "/icon.svg",
   },
@@ -29,7 +29,6 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
-  maximumScale: 1,
 };
 
 export default function RootLayout({
@@ -38,8 +37,9 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className={`dark ${inter.variable} ${jetbrainsMono.variable}`}>
-      <body className="min-h-screen bg-black text-[#F5F5F7] antialiased selection:bg-[#00B4A0] selection:text-black">
+    // Light by default; page.tsx applies the saved theme by toggling `dark` / `light` on <html>.
+    <html lang="en" className={`light ${inter.variable} ${jetbrainsMono.variable}`} suppressHydrationWarning>
+      <body className="min-h-screen antialiased selection:bg-blue-200 selection:text-slate-900">
         {children}
       </body>
     </html>

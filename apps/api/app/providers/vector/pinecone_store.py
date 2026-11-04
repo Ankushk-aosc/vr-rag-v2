@@ -86,7 +86,7 @@ class PineconeVectorStore(VectorStore):
         if not self.is_configured():
             return []
 
-        roles = allowed_roles or ["family_admin", "family_member"]
+        roles = allowed_roles or []  # no role, no results (fail closed)
         try:
             matches = pinecone_service.query_similar_chunks(
                 query_vector=vector,

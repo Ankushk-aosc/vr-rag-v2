@@ -149,3 +149,23 @@ export interface Dashboard {
 }
 
 export type DashboardStatus = { state: "loading" } | { state: "ready"; dashboardId: string } | { state: "error"; message: string };
+
+// ---------------------------------------------------------------- audit & access
+
+export interface AuditEvent {
+  id: string;
+  timestamp: string;
+  action: string;
+  user_id: string | null;
+  family_entity_id: string | null;
+  resource_id: string | null;
+  details: string;
+}
+
+export interface UserInvite {
+  invite_token: string;
+  family_entity_id: string;
+  role: "family_member" | "read_only_adviser";
+  expires_at: string;
+}
+

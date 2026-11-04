@@ -16,7 +16,7 @@ REPO = Path(__file__).resolve().parents[3]
 DOCS = [REPO / "README.md", REPO / "docs" / "runbook.md", REPO / "docs" / "POC.md", REPO / ".env.example"]
 # Variables read by something other than the API's Settings
 NON_API_VARS = {
-    "POSTGRES_ADMIN_PASSWORD", "APP_DB_USER", "APP_DB_PASSWORD", "APP_DB_NAME", "DOCKER_LOCAL_LLM_BASE_URL",
+    "POSTGRES_ADMIN_PASSWORD", "APP_DB_USER", "APP_DB_PASSWORD", "MIGRATION_DB_PASSWORD", "APP_DB_NAME", "DOCKER_LOCAL_LLM_BASE_URL",
     "TEST_DATABASE_URL", "EXPO_PUBLIC_API_URL",
 }
 

@@ -74,6 +74,9 @@ class Dataset:
         }
 
 
+SUMMARY_ROW = re.compile(r"^(grand\s+|sub-?)?totals?\b", re.IGNORECASE)
+
+
 def _norm(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", s.lower())
 
@@ -165,7 +168,8 @@ def build_datasets(chunks: List[Dict]) -> List[Dataset]:
 
     datasets: List[Dataset] = []
     for (doc_id, header), g in groups.items():
-        rows = list(g["rows"].values())
+        # A sheet's own "Total" / "Subtotal" rows would be counted twice once KPIs and charts aggregate
+        rows = [r for r in g["rows"].values() if not (r and SUMMARY_ROW.match(str(r[0]).strip()))]
         if len(rows) < MIN_ROWS:
             continue
 
@@ -281,15 +285,18 @@ _cache: Dict[str, object] = {"version": -1, "datasets": []}
 _lock = threading.Lock()
 
 
-def get_datasets(family_entity_id: str, user_roles: List[str]) -> List[Dataset]:
-    """Datasets the caller may see (same tenant and at least one shared role)."""
+def get_datasets(family_entity_id: str, user_roles: List[str], allowed_document_ids=None) -> List[Dataset]:
+    """Datasets the caller may see: same tenant, a shared role tag, and (when a scope is given) an
+    authorized document. A dataset with no role tags is not visible (fail closed)."""
     with _lock:
         if _cache["version"] != lexical_index.version:
             _cache["datasets"] = build_datasets(lexical_index.snapshot())
             _cache["version"] = lexical_index.version
         all_sets: List[Dataset] = _cache["datasets"]  # type: ignore[assignment]
-    roles = set(user_roles)
+    roles = set(user_roles or [])
     return [
         d for d in all_sets
-        if d.family_entity_id == family_entity_id and (not d.allowed_roles or roles.intersection(d.allowed_roles))
+        if d.family_entity_id == family_entity_id
+        and roles.intersection(d.allowed_roles or [])
+        and (allowed_document_ids is None or d.document_id in allowed_document_ids)
     ]

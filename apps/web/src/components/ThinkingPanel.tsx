@@ -1,10 +1,11 @@
 "use client";
 
 import React from "react";
-import { Brain, X } from "lucide-react";
+import { X, CheckCircle2, ShieldAlert } from "lucide-react";
 import { ChatMessage } from "../types";
 import { FloatingPanel } from "./FloatingPanel";
-import { ThinkingTrace } from "./ThinkingTrace";
+import { StageList, fmtMs } from "./ThinkingTrace";
+import { answerSources, citationLocation, distinctDocuments } from "../lib/citations";
 
 interface ThinkingPanelProps {
   message: ChatMessage | null;
@@ -13,64 +14,116 @@ interface ThinkingPanelProps {
   theme?: "dark" | "light";
 }
 
-/** Standalone, movable window showing the live reasoning of the most recent answer. */
+/**
+ * Retrieval progress for the latest answer, built only from the pipeline's stage events and the
+ * citations the backend returned. Model reasoning is never sent by the API (Audit I-10).
+ */
 export function ThinkingPanel({ message, isOpen, onClose, theme = "light" }: ThinkingPanelProps) {
   if (!isOpen) return null;
   const isLight = theme === "light";
+  const muted = isLight ? "text-slate-500" : "text-slate-400";
   const stages = message?.thinking_trace || [];
-  const working = !!message?.streaming && !message?.content;
+  const working = !!message?.streaming;
+  const retrieved = message?.sources || [];
+  const cited = answerSources(message);
+  const totalMs = message?.total_latency_ms || stages.reduce((a, s) => a + (s.duration_ms || 0), 0);
+  const settled = !!message && !working && stages.length > 0;
+
+  const stat = (value: number, label: string) => (
+    <div className="flex items-baseline justify-between text-[13px]">
+      <span className={muted}>{label}</span>
+      <span className="font-medium tabular-nums">{value}</span>
+    </div>
+  );
 
   return (
     <FloatingPanel
       id="thinking"
       theme={theme}
-      ariaLabel="Live reasoning"
-      minW={260}
-      minH={160}
-      defaultRect={(vw, vh) => ({ x: 24, y: Math.max(150, vh - 420), w: Math.min(340, vw - 48), h: 300 })}
+      ariaLabel="Reasoning"
+      minW={300}
+      minH={220}
+      defaultRect={(vw, vh) => ({ x: 16, y: 120, w: Math.min(360, vw - 32), h: Math.min(480, vh - 200) })}
     >
       <div
-        className={`w-full h-full flex flex-col rounded-2xl border shadow-xl overflow-hidden ${
-          isLight ? "bg-white/[0.97] border-black/10 text-black" : "bg-[#121218]/[0.96] border-white/10 text-white"
+        className={`w-full h-full flex flex-col rounded-lg border shadow-lg overflow-hidden ${
+          isLight ? "bg-white border-slate-200 text-slate-900" : "bg-[#0F172A] border-slate-700 text-slate-100"
         }`}
       >
         <div
           data-drag-handle
           title="Drag to move"
-          className={`flex items-center justify-between px-3.5 py-2.5 border-b cursor-grab active:cursor-grabbing touch-none ${
-            isLight ? "border-black/10" : "border-white/10"
+          className={`flex items-center justify-between px-4 py-3 border-b cursor-grab active:cursor-grabbing touch-none select-none ${
+            isLight ? "border-slate-200" : "border-slate-800"
           }`}
         >
-          <div className="flex items-center gap-2 pointer-events-none">
-            <Brain className={`w-3.5 h-3.5 ${isLight ? "text-[#6D28D9]" : "text-[#C4B5FD]"}`} />
-            <span className="text-xs font-semibold">Reasoning</span>
-            {working && <span className="w-1.5 h-1.5 rounded-full bg-[#8B5CF6] animate-pulse" />}
+          <div className="pointer-events-none">
+            <h2 className="text-[14px] font-semibold">Reasoning</h2>
+            <p className={`text-[12px] ${muted}`}>Evidence retrieval for the latest question</p>
           </div>
           <button
             onClick={onClose}
-            title="Hide reasoning panel"
-            className={`p-1 rounded-full ${isLight ? "text-black/40 hover:bg-black/5" : "text-white/40 hover:bg-white/10"}`}
+            aria-label="Close reasoning panel"
+            className={`p-1.5 rounded ${isLight ? "text-slate-500 hover:text-slate-900 hover:bg-slate-100" : "text-slate-400 hover:text-white hover:bg-slate-800"}`}
           >
-            <X className="w-3.5 h-3.5" />
+            <X className="w-4 h-4" />
           </button>
         </div>
-        <div className="flex-1 overflow-y-auto p-3">
-          {stages.length ? (
-            <ThinkingTrace
-              key={message?.id}
-              stages={stages}
-              reasoning={message?.reasoning}
-              working={working}
-              totalMs={stages.reduce((a, s) => a + (s.duration_ms || 0), 0)}
-              theme={theme}
-              defaultOpen
-              collapseOnDone={false}
-              reasoningMaxHeight={600}
-            />
+
+        <div className="flex-1 overflow-y-auto p-4 space-y-5" aria-live="polite">
+          {!message || (!stages.length && !working) ? (
+            <div>
+              <div className="text-[13px] font-medium">Evidence retrieval</div>
+              <div className={`text-[13px] ${muted}`}>Ready</div>
+              <p className={`text-[12px] leading-relaxed mt-3 ${muted}`}>
+                When you ask a question, the steps used to search your authorised records appear here, followed by the
+                evidence the answer relies on.
+              </p>
+            </div>
           ) : (
-            <p className={`text-[11.5px] leading-relaxed ${isLight ? "text-black/45" : "text-white/45"}`}>
-              Ask a question to watch the assistant search your documents, rank evidence and reason in real time.
-            </p>
+            <>
+              <section>
+                <div className="flex items-baseline justify-between mb-2">
+                  <h3 className="text-[13px] font-semibold">{working ? "Searching authorised records" : "Retrieval steps"}</h3>
+                  {settled && totalMs > 0 && <span className={`font-mono text-[12px] tabular-nums ${muted}`}>{fmtMs(totalMs)}</span>}
+                </div>
+                {stages.length ? <StageList stages={stages} theme={theme} /> : <p className={`text-[13px] ${muted}`}>Starting…</p>}
+              </section>
+
+              {settled && (
+                <section className={`pt-4 border-t ${isLight ? "border-slate-200" : "border-slate-800"}`}>
+                  <h3 className="text-[13px] font-semibold mb-2">Evidence</h3>
+                  <div className="space-y-1">
+                    {stat(retrieved.length, "Passages retrieved")}
+                    {stat(cited.length, "Passages cited")}
+                    {stat(distinctDocuments(cited), "Supporting documents")}
+                  </div>
+                  {cited.length > 0 && (
+                    <ul className="mt-3 space-y-1.5">
+                      {cited.map((c, i) => (
+                        <li key={`${c.chunk_id}-${i}`} className="text-[12px]">
+                          <span className="font-medium">{c.document_name}</span>
+                          <span className={muted}> · {citationLocation(c)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </section>
+              )}
+
+              {settled && message.grounded === true && (
+                <div className={`flex items-start gap-2 text-[12px] ${isLight ? "text-emerald-800" : "text-emerald-300"}`}>
+                  <CheckCircle2 className="w-4 h-4 flex-shrink-0" aria-hidden />
+                  <span>Figures and citation references were verified against the cited records.</span>
+                </div>
+              )}
+              {settled && message.grounded === false && (
+                <div className={`flex items-start gap-2 text-[12px] ${isLight ? "text-amber-800" : "text-amber-300"}`}>
+                  <ShieldAlert className="w-4 h-4 flex-shrink-0" aria-hidden />
+                  <span>Some figures or references could not be verified against your records. Review the cited sources.</span>
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>

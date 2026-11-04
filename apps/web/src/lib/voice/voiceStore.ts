@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import { VoicePhase } from "../../types";
+import type { VoicePhase } from "../../types";
 
 export interface VoiceSnapshot {
   phase: VoicePhase;
@@ -26,6 +26,21 @@ export interface VoiceSnapshot {
    * (Chrome SpeechRecognition → Google, remote speechSynthesis voices) are used only when this is "cloud".
    */
   privacyMode: "local" | "cloud" | "unknown";
+  /** Explicit client-side opt-in allowing browser SpeechRecognition even in local privacy mode. */
+  serverAllowsBrowserSpeech: boolean;
+  browserSpeechOptIn: boolean;
+  /** Transient status/fallback message displayed in voice HUD (e.g. "Switching to Whisper..."). */
+  statusText?: string;
+}
+
+function getInitialBrowserSpeechOptIn(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    const s = JSON.parse(window.localStorage.getItem("aether_voice_settings_v1") || "{}");
+    return !!s.browserSpeechOptIn;
+  } catch {
+    return false;
+  }
 }
 
 const initial: VoiceSnapshot = {
@@ -41,11 +56,23 @@ const initial: VoiceSnapshot = {
   standby: false,
   wakeWordDetected: false,
   privacyMode: "unknown",
+  serverAllowsBrowserSpeech: true,
+  browserSpeechOptIn: getInitialBrowserSpeechOptIn(),
+  statusText: "",
 };
 
 /** Fail closed: cloud browser speech only after the API has confirmed PRIVACY_MODE=cloud. */
 export function cloudSpeechAllowed(): boolean {
   return snapshot.privacyMode === "cloud";
+}
+
+/**
+ * Browser SpeechRecognition may send audio to the browser vendor's speech service, so it is used only
+ * after the user explicitly opts in, and never when the server forbids it. Whisper is the default.
+ */
+export function canUseBrowserSpeech(): boolean {
+  if (snapshot.serverAllowsBrowserSpeech === false) return false;
+  return snapshot.browserSpeechOptIn;
 }
 
 let snapshot: VoiceSnapshot = initial;

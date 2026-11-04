@@ -367,8 +367,12 @@ def select_best_dataset(question: str, answer: str, datasets: List[Dataset]) -> 
     return best_ds
 
 
-async def build_dashboard(question: str, answer: str, family_entity_id: str, user_roles: List[str]) -> Dict[str, Any]:
-    datasets = await asyncio.to_thread(get_datasets, family_entity_id, user_roles)
+async def build_dashboard(question: str, answer: str, family_entity_id: str, user_roles: List[str],
+                          allowed_document_ids=None) -> Dict[str, Any]:
+    if allowed_document_ids is None:
+        datasets = await asyncio.to_thread(get_datasets, family_entity_id, user_roles)
+    else:
+        datasets = await asyncio.to_thread(get_datasets, family_entity_id, user_roles, allowed_document_ids)
     if not datasets:
         facts = facts_dashboard(question, answer)
         if facts:

@@ -117,3 +117,21 @@ def test_build_dashboard_falls_back_without_llm(monkeypatch):
     out = asyncio.run(dashboards.build_dashboard("AAPL on 2020-04-01", "", "fam", ["family_member"]))
     assert out["plan_source"] == "default"
     assert out["kpis"][0]["display"] == "$58.11"
+
+
+def test_summary_rows_are_not_aggregated_twice():
+    """A sheet's own 'Total' row must not be summed with the rows it already totals."""
+    from app.services.datasets import build_datasets
+
+    text = (
+        "| Asset_Class | Value_AUD |\n| --- | --- |\n"
+        "| Australian Equities | 100 |\n| International Equities | 50 |\n| Fixed Income | 25 |\n"
+        "| Cash | 25 |\n| Total Portfolio | 200 |\n"
+    )
+    chunks = [{"document_id": "d1", "text": text, "is_table": True, "allowed_roles": ["family_member"], "original_name": "p.xlsx"}]
+    datasets = build_datasets(chunks)
+    assert datasets, "expected one dataset"
+    ds = datasets[0]
+    assert "Total Portfolio" not in ds.x
+    value_col = next(c for c in ds.columns if c.key == "Value_AUD")
+    assert sum(v for v in ds.values[value_col.key] if v is not None) == 200

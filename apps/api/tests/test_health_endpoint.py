@@ -37,7 +37,7 @@ def _register(client, **extra):
 
 def test_public_health_is_minimal(client):
     body = client.get("/api/health").json()
-    assert set(body) == {"status", "privacy_mode", "data_leaves_deployment"}
+    assert set(body) == {"status", "privacy_mode", "data_leaves_deployment", "allow_browser_speech"}
     assert body["status"] == "healthy"
 
 

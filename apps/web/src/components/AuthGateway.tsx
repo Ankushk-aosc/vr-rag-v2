@@ -1,21 +1,7 @@
 "use client";
 
-import React, { useState, useRef, useCallback } from "react";
-import {
-  Shield,
-  Box,
-  LayoutGrid,
-  Lock,
-  Mail,
-  User,
-  Building,
-  ArrowRight,
-  Loader2,
-  AlertCircle,
-  Sparkles,
-  Layers,
-} from "lucide-react";
-import SwarmCursor from "./SwarmCursor";
+import React, { useState } from "react";
+import { Loader2 } from "lucide-react";
 import { login, register, UserProfile } from "../lib/auth";
 
 // Next inlines NODE_ENV, so production bundles drop these dev-only demo credentials entirely
@@ -25,397 +11,175 @@ const DEMO_CREDENTIALS =
     : null;
 
 export interface AuthGatewayProps {
-  onAuthenticated: (user: UserProfile, mode: "spatial" | "ledger") => void;
+  onAuthenticated: (user: UserProfile) => void;
+}
+
+/** Login and sign-up maps raw failures to a calm message; the server's own `detail` text is already safe. */
+function authMessage(err: unknown, tab: "login" | "register") {
+  const msg = err instanceof Error ? err.message : "";
+  if (!msg || /status \d{3}|failed to fetch|networkerror|load failed/i.test(msg)) {
+    return tab === "login"
+      ? "We couldn't sign you in. The service may be temporarily unavailable; please try again."
+      : "We couldn't create your account. The service may be temporarily unavailable; please try again.";
+  }
+  return msg;
 }
 
 export function AuthGateway({ onAuthenticated }: AuthGatewayProps) {
-  // Render Mode: 2D Standard vs 3D Spatial Holographic
-  const [renderMode, setRenderMode] = useState<"2d" | "3d">("3d");
   const [tab, setTab] = useState<"login" | "register">("login");
-
-  // Form Fields
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [fullName, setFullName] = useState("");
-  const [familyTrustName, setFamilyTrustName] = useState("");
-
+  const [familyName, setFamilyName] = useState("");
+  const [inviteToken, setInviteToken] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // 3D Tilt & Parallax Physics State
-  const cardRef = useRef<HTMLDivElement>(null);
-  const [tilt, setTilt] = useState({ rx: 0, ry: 0, gx: 50, gy: 50 });
-
-  const handlePointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    if (renderMode !== "3d" || !cardRef.current) return;
-    const rect = cardRef.current.getBoundingClientRect();
-    const nx = (e.clientX - (rect.left + rect.width / 2)) / (rect.width / 2);
-    const ny = (e.clientY - (rect.top + rect.height / 2)) / (rect.height / 2);
-
-    // Limit maximum tilt to 12 degrees
-    const clampedX = Math.max(-1, Math.min(1, nx));
-    const clampedY = Math.max(-1, Math.min(1, ny));
-
-    setTilt({
-      rx: -clampedY * 9,
-      ry: clampedX * 11,
-      gx: ((e.clientX - rect.left) / rect.width) * 100,
-      gy: ((e.clientY - rect.top) / rect.height) * 100,
-    });
-  }, [renderMode]);
-
-  const handlePointerLeave = useCallback(() => {
-    setTilt({ rx: 0, ry: 0, gx: 50, gy: 50 });
-  }, []);
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isLoading) return;
     setErrorMessage(null);
-    setIsLoading(true);
-
-    try {
-      if (tab === "login") {
-        if (!email.trim() || !password) {
-          throw new Error("Please enter both email and password.");
-        }
-        const authData = await login(email.trim(), password);
-        onAuthenticated(authData.user, renderMode === "3d" ? "spatial" : "ledger");
-      } else {
-        if (!fullName.trim() || !email.trim() || !password) {
-          throw new Error("Full name, email, and password are required.");
-        }
-        if (password.length < 8) {
-          throw new Error("Password must be at least 8 characters.");
-        }
-        const authData = await register(
-          email.trim(),
-          password,
-          fullName.trim(),
-          familyTrustName.trim() || undefined
-        );
-        onAuthenticated(authData.user, renderMode === "3d" ? "spatial" : "ledger");
+    if (tab === "login" && (!email.trim() || !password)) {
+      setErrorMessage("Enter your email and password.");
+      return;
+    }
+    if (tab === "register") {
+      if (!fullName.trim() || !email.trim() || !password) {
+        setErrorMessage("Full name, email and password are required.");
+        return;
       }
-    } catch (err: any) {
-      setErrorMessage(err.message || "Authentication failed. Please verify credentials.");
+      if (password.length < 8) {
+        setErrorMessage("Use a password of at least 8 characters.");
+        return;
+      }
+    }
+    setIsLoading(true);
+    try {
+      const auth =
+        tab === "login"
+          ? await login(email.trim(), password)
+          : await register(email.trim(), password, fullName.trim(), familyName.trim() || undefined, inviteToken.trim() || undefined);
+      onAuthenticated(auth.user);
+    } catch (err) {
+      setErrorMessage(authMessage(err, tab));
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleUseDemo = () => {
-    if (!DEMO_CREDENTIALS) return;
-    setEmail(DEMO_CREDENTIALS.email);
-    setPassword(DEMO_CREDENTIALS.password);
-    setTab("login");
-    setErrorMessage(null);
-  };
-
-  const is3D = renderMode === "3d";
+  const field = "mt-1 block w-full h-10 rounded-md border border-slate-300 bg-white px-3 text-[14px] text-slate-900 placeholder-slate-400 focus:border-[#2563EB] focus:outline-none focus:ring-2 focus:ring-blue-100";
+  const label = "block text-[13px] font-medium text-slate-700";
 
   return (
-    <div
-      className="fixed inset-0 z-50 overflow-hidden font-sans bg-black"
-      style={{
-        backgroundImage:
-          "radial-gradient(circle at 50% 35%, rgba(124, 58, 237, 0.28) 0%, rgba(76, 29, 149, 0.15) 35%, rgba(0, 0, 0, 0.98) 85%)",
-      }}
-    >
-      {/* 1. Fullscreen WebGL2 Swarm Cursor Particle Simulation */}
-      <SwarmCursor
-        color="#7C3AED"
-        accentColor="#38BDF8"
-        count={1200}
-        size={3.4}
-        shape="dot"
-        spread={120}
-        speed={1.2}
-        swirl={0.7}
-        tail={0.6}
-        trail={0.8}
-        wander={0.6}
-        depth={0.8}
-        targets="button, input, a, [data-swarm-target]"
-        clickEffect="burst"
-      />
+    <div className="min-h-screen bg-[#F8FAFC] text-slate-900 flex flex-col">
+      <div className="border-b border-slate-200 bg-white px-4 sm:px-6 py-2 text-[12px] text-slate-600">
+        <span className="font-semibold text-amber-700">ASIC RG 244 &amp; Privacy Act 1988:</span> Factual summaries derived from
+        authorised records. Not personal financial product advice.
+      </div>
 
-      {/* 2. Dedicated Centered Stage Container (Isolated from background) */}
-      <div className="fixed inset-0 z-10 flex items-center justify-center overflow-y-auto px-4 py-8 sm:px-6 pointer-events-none">
-        <div
-          className="w-full max-w-xl mx-auto my-auto relative pointer-events-auto"
-          style={{ perspective: is3D ? "1200px" : "none" }}
-        >
-        <div
-          ref={cardRef}
-          onPointerMove={handlePointerMove}
-          onPointerLeave={handlePointerLeave}
-          className={`w-full rounded-3xl border transition-all duration-300 relative overflow-hidden bg-transparent shadow-2xl ring-1 ring-white/10 ${
-            is3D
-              ? "border-[#7C3AED]/35 shadow-[#7C3AED]/25 hover:shadow-[#7C3AED]/35 hover:border-[#7C3AED]/55"
-              : "border-white/20 shadow-black/80 hover:border-white/30"
-          }`}
-          style={{
-            transform: is3D
-              ? `rotateX(${tilt.rx}deg) rotateY(${tilt.ry}deg) translateZ(15px)`
-              : "none",
-            transformStyle: is3D ? "preserve-3d" : "flat",
-            transition: "transform 0.15s ease-out, box-shadow 0.3s ease, border-color 0.3s ease",
-          }}
-        >
-          {/* Holographic Dynamic Cursor Glare (Active in 3D Mode) */}
-          {is3D && (
-            <div
-              className="absolute inset-0 pointer-events-none rounded-3xl transition-opacity duration-300"
-              style={{
-                background: `radial-gradient(circle at ${tilt.gx}% ${tilt.gy}%, rgba(124, 58, 237, 0.20) 0%, rgba(56, 189, 248, 0.08) 35%, transparent 70%)`,
-                transform: "translateZ(1px)",
-              }}
-            />
-          )}
-
-          <div className="p-6 sm:p-9 space-y-6 relative z-10">
-            {/* TOP BAR: Brand Badge & 2D / 3D Form Render Toggle Button */}
-            <div
-              className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-white/10 pb-5"
-              style={{ transform: is3D ? "translateZ(30px)" : "none" }}
-            >
-              {/* ASIC Compliance Badge */}
-              <div className="inline-flex items-center space-x-2 px-3 py-1 rounded-full bg-[#7C3AED]/15 border border-[#7C3AED]/30 text-[#A78BFA] text-xs font-semibold tracking-wide w-fit">
-                <Shield className="w-3.5 h-3.5 text-[#A78BFA]" />
-                <span>ASIC RG 244 • Sovereign Vault</span>
-              </div>
-
-              {/* Form Render Mode Switcher: 2D vs 3D */}
-              <div className="inline-flex items-center p-1 rounded-full bg-white/5 border border-white/10 backdrop-blur-md self-start sm:self-auto">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setRenderMode("2d");
-                    setTilt({ rx: 0, ry: 0, gx: 50, gy: 50 });
-                  }}
-                  className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all ${
-                    !is3D
-                      ? "bg-white/15 text-white shadow-sm border border-white/20"
-                      : "text-zinc-400 hover:text-zinc-200"
-                  }`}
-                  title="Render form in high-contrast flat 2D"
-                >
-                  <LayoutGrid className="w-3.5 h-3.5" />
-                  <span>2D Flat</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setRenderMode("3d")}
-                  className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all ${
-                    is3D
-                      ? "bg-gradient-to-r from-[#7C3AED] to-[#9333EA] text-white shadow-md shadow-[#7C3AED]/30 border border-purple-400/30"
-                      : "text-zinc-400 hover:text-zinc-200"
-                  }`}
-                  title="Render form in 3D spatial holographic mode with tilt parallax"
-                >
-                  <Box className="w-3.5 h-3.5 text-[#A78BFA]" />
-                  <span>3D Spatial</span>
-                </button>
-              </div>
-            </div>
-
-            {/* HEADER: Title & Dynamic Mode Feedback */}
-            <div
-              className="space-y-1.5"
-              style={{ transform: is3D ? "translateZ(32px)" : "none" }}
-            >
-              <div className="flex items-center justify-between">
-                <h1 className="text-2xl sm:text-3xl font-black tracking-tight text-white flex items-center space-x-2">
-                  <span>Aether Sovereign</span>
-                  <span className="text-xs px-2 py-0.5 rounded-md font-mono bg-[#7C3AED]/20 border border-[#7C3AED]/40 text-[#DDD6FE]">
-                    v2.6
-                  </span>
-                </h1>
-
-                {/* Quick Auto-fill Demo Button (development builds only; the API only seeds it in dev) */}
-                {DEMO_CREDENTIALS && (
-                  <button
-                    type="button"
-                    onClick={handleUseDemo}
-                    title="Auto-fill verified demo administrator credentials"
-                    className="text-[11px] text-[#A78BFA] hover:text-white font-medium bg-[#7C3AED]/15 px-2.5 py-1 rounded-md border border-[#7C3AED]/30 hover:bg-[#7C3AED]/25 transition-all"
-                  >
-                    Auto-fill Demo Admin
-                  </button>
-                )}
-              </div>
-
-              <p className="text-xs sm:text-sm text-zinc-400">
-                Australian Family Office Spatial Financial Intelligence Gateway
-              </p>
-
-              {/* Render Status Pill */}
-              <div className="pt-1 flex items-center space-x-2 text-[11px]">
-                {is3D ? (
-                  <span className="inline-flex items-center space-x-1.5 text-[#A78BFA] bg-[#7C3AED]/15 px-2.5 py-0.5 rounded-full border border-[#7C3AED]/30 font-medium">
-                    <Sparkles className="w-3 h-3 text-[#A78BFA]" />
-                    <span>3D Holographic Render Active • Cursor Tilt & Depth Enabled</span>
-                  </span>
-                ) : (
-                  <span className="inline-flex items-center space-x-1.5 text-zinc-300 bg-white/5 px-2.5 py-0.5 rounded-full border border-white/10 font-medium">
-                    <Layers className="w-3 h-3 text-zinc-400" />
-                    <span>2D Flat Render Active • High-Contrast Executive Layout</span>
-                  </span>
-                )}
-              </div>
-            </div>
-
-            {/* TAB SELECTOR: Sign In vs Register */}
-            <div
-              className="flex space-x-6 border-b border-white/10 pb-2"
-              style={{ transform: is3D ? "translateZ(24px)" : "none" }}
-            >
-              <button
-                type="button"
-                onClick={() => { setTab("login"); setErrorMessage(null); }}
-                className={`text-sm font-semibold pb-2 border-b-2 transition-all ${
-                  tab === "login"
-                    ? "text-white border-[#7C3AED] shadow-sm"
-                    : "text-zinc-400 border-transparent hover:text-white"
-                }`}
-              >
-                Sign In
-              </button>
-              <button
-                type="button"
-                onClick={() => { setTab("register"); setErrorMessage(null); }}
-                className={`text-sm font-semibold pb-2 border-b-2 transition-all ${
-                  tab === "register"
-                    ? "text-white border-[#7C3AED] shadow-sm"
-                    : "text-zinc-400 border-transparent hover:text-white"
-                }`}
-              >
-                Register Family Trust
-              </button>
-            </div>
-
-            {/* ERROR BANNER */}
-            {errorMessage && (
-              <div
-                className="p-3 rounded-xl bg-red-500/15 border border-red-500/30 text-red-300 text-xs flex items-center space-x-2"
-                style={{ transform: is3D ? "translateZ(26px)" : "none" }}
-              >
-                <AlertCircle className="w-4 h-4 shrink-0 text-red-400" />
-                <span>{errorMessage}</span>
-              </div>
-            )}
-
-            {/* AUTHENTICATION FORM */}
-            <form onSubmit={handleSubmit} className="space-y-4">
-              {tab === "register" && (
-                <div
-                  className="space-y-4"
-                  style={{ transform: is3D ? "translateZ(20px)" : "none" }}
-                >
-                  <div>
-                    <label className="text-xs font-medium text-zinc-300 mb-1 block">Full Name</label>
-                    <div className="relative">
-                      <User className="w-4 h-4 text-zinc-500 absolute left-3.5 top-3" />
-                      <input
-                        type="text"
-                        required
-                        value={fullName}
-                        onChange={(e) => setFullName(e.target.value)}
-                        placeholder="e.g. Alexander Sterling"
-                        className="w-full pl-10 pr-4 py-2.5 bg-transparent border border-white/20 rounded-xl text-sm text-white placeholder-zinc-400 focus:outline-none focus:border-[#7C3AED] focus:ring-1 focus:ring-[#7C3AED] transition-all"
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="text-xs font-medium text-zinc-300 mb-1 block">Family Trust / Entity Name</label>
-                    <div className="relative">
-                      <Building className="w-4 h-4 text-zinc-500 absolute left-3.5 top-3" />
-                      <input
-                        type="text"
-                        value={familyTrustName}
-                        onChange={(e) => setFamilyTrustName(e.target.value)}
-                        placeholder="e.g. Sterling Family Office"
-                        className="w-full pl-10 pr-4 py-2.5 bg-transparent border border-white/20 rounded-xl text-sm text-white placeholder-zinc-400 focus:outline-none focus:border-[#7C3AED] focus:ring-1 focus:ring-[#7C3AED] transition-all"
-                      />
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              <div style={{ transform: is3D ? "translateZ(20px)" : "none" }}>
-                <label className="text-xs font-medium text-zinc-300 mb-1 block">Corporate Email Address</label>
-                <div className="relative">
-                  <Mail className="w-4 h-4 text-zinc-500 absolute left-3.5 top-3" />
-                  <input
-                    type="email"
-                    required
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    placeholder="you@familyoffice.com.au"
-                    className="w-full pl-10 pr-4 py-2.5 bg-transparent border border-white/20 rounded-xl text-sm text-white placeholder-zinc-400 focus:outline-none focus:border-[#7C3AED] focus:ring-1 focus:ring-[#7C3AED] transition-all"
-                  />
-                </div>
-              </div>
-
-              <div style={{ transform: is3D ? "translateZ(20px)" : "none" }}>
-                <label className="text-xs font-medium text-zinc-300 mb-1 block">Password</label>
-                <div className="relative">
-                  <Lock className="w-4 h-4 text-zinc-500 absolute left-3.5 top-3" />
-                  <input
-                    type="password"
-                    required
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    placeholder="••••••••••••••••"
-                    className="w-full pl-10 pr-4 py-2.5 bg-transparent border border-white/20 rounded-xl text-sm text-white placeholder-zinc-400 focus:outline-none focus:border-[#7C3AED] focus:ring-1 focus:ring-[#7C3AED] transition-all"
-                  />
-                </div>
-              </div>
-
-              {/* SUBMIT BUTTON WITH 3D DEPTH */}
-              <div
-                className="pt-2"
-                style={{ transform: is3D ? "translateZ(28px)" : "none" }}
-              >
-                <button
-                  type="submit"
-                  disabled={isLoading}
-                  className="w-full py-3.5 px-4 rounded-xl bg-gradient-to-r from-[#6D28D9] via-[#7C3AED] to-[#8B5CF6] hover:brightness-110 text-white font-semibold text-sm flex items-center justify-center space-x-2 shadow-lg shadow-[#7C3AED]/30 border border-purple-400/30 transition-all disabled:opacity-50 cursor-pointer active:scale-[0.99]"
-                >
-                  {isLoading ? (
-                    <>
-                      <Loader2 className="w-4 h-4 animate-spin text-white" />
-                      <span>Verifying Fiduciary Security Clearance...</span>
-                    </>
-                  ) : (
-                    <>
-                      <span>
-                        {tab === "login"
-                          ? `Sign In to Sovereign Vault (${is3D ? "3D Spatial" : "2D Standard"})`
-                          : "Create Sovereign Vault Account"}
-                      </span>
-                      <ArrowRight className="w-4 h-4 text-white" />
-                    </>
-                  )}
-                </button>
-              </div>
-            </form>
-
-            {/* FOOTER: Regulatory & Isolation Assurance */}
-            <div
-              className="pt-2 text-center text-[11px] text-zinc-500 space-y-1 border-t border-white/5"
-              style={{ transform: is3D ? "translateZ(15px)" : "none" }}
-            >
-              <p className="flex items-center justify-center space-x-1.5">
-                <Lock className="w-3 h-3 text-[#A78BFA]" />
-                <span>Tenant-Isolated SQLite Storage & APP 8 Disclosed Cloud Sync</span>
-              </p>
-              <p>© 2026 Sovereign Wealth Intelligence • Australia (Cth)</p>
+      <main className="flex-1 flex items-center justify-center px-4 py-10">
+        <div className="w-full max-w-sm">
+          <div className="flex items-center gap-3 mb-8">
+            <span className="w-9 h-9 rounded-md bg-[#0A2540] text-[#E0F2FE] text-[12px] font-bold tracking-wider flex items-center justify-center">AS</span>
+            <div className="leading-tight">
+              <div className="text-[14px] font-semibold tracking-[0.08em] text-[#0A2540]">AETHER SOVEREIGN</div>
+              <div className="text-[12px] text-slate-500">Family office financial intelligence</div>
             </div>
           </div>
+
+          <h1 className="text-[24px] font-semibold tracking-tight">{tab === "login" ? "Sign in" : "Create an account"}</h1>
+          <p className="text-[14px] text-slate-500 mt-1">
+            {tab === "login"
+              ? "Access your family office's authorised records."
+              : "Start a new family office workspace, or join one with an invitation."}
+          </p>
+
+          <form onSubmit={handleSubmit} className="mt-6 space-y-4" noValidate>
+            {tab === "register" && (
+              <label className={label}>
+                Full name
+                <input type="text" autoComplete="name" value={fullName} onChange={(e) => setFullName(e.target.value)} className={field} />
+              </label>
+            )}
+            <label className={label}>
+              Email
+              <input type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} className={field} />
+            </label>
+            <label className={label}>
+              Password
+              <input
+                type="password"
+                autoComplete={tab === "login" ? "current-password" : "new-password"}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className={field}
+              />
+              {tab === "register" && <span className="block mt-1 text-[12px] font-normal text-slate-500">At least 8 characters.</span>}
+            </label>
+            {tab === "register" && (
+              <>
+                <label className={label}>
+                  Invitation token <span className="font-normal text-slate-500">(if you were invited)</span>
+                  <input type="text" value={inviteToken} onChange={(e) => setInviteToken(e.target.value)} className={`${field} font-mono text-[12px]`} />
+                </label>
+                {!inviteToken.trim() && (
+                  <label className={label}>
+                    Family office or trust name <span className="font-normal text-slate-500">(new workspace)</span>
+                    <input type="text" autoComplete="organization" value={familyName} onChange={(e) => setFamilyName(e.target.value)} className={field} />
+                  </label>
+                )}
+              </>
+            )}
+
+            {errorMessage && (
+              <p role="alert" className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-[13px] text-rose-900">
+                {errorMessage}
+              </p>
+            )}
+
+            <button
+              type="submit"
+              disabled={isLoading}
+              className="w-full h-10 rounded-md bg-[#2563EB] text-white text-[14px] font-medium hover:bg-[#1D4ED8] disabled:opacity-60 inline-flex items-center justify-center gap-2"
+            >
+              {isLoading && <Loader2 className="w-4 h-4 animate-spin" aria-hidden />}
+              {tab === "login" ? (isLoading ? "Signing in…" : "Sign in") : isLoading ? "Creating account…" : "Create account"}
+            </button>
+          </form>
+
+          <div className="mt-6 text-[13px] text-slate-600">
+            {tab === "login" ? (
+              <>
+                New to Aether?{" "}
+                <button type="button" className="font-medium text-blue-700 dark:text-blue-400 hover:underline" onClick={() => { setTab("register"); setErrorMessage(null); }}>
+                  Create an account
+                </button>
+              </>
+            ) : (
+              <>
+                Already have an account?{" "}
+                <button type="button" className="font-medium text-blue-700 dark:text-blue-400 hover:underline" onClick={() => { setTab("login"); setErrorMessage(null); }}>
+                  Sign in
+                </button>
+              </>
+            )}
+          </div>
+
+          {DEMO_CREDENTIALS && tab === "login" && (
+            <button
+              type="button"
+              onClick={() => {
+                setEmail(DEMO_CREDENTIALS.email);
+                setPassword(DEMO_CREDENTIALS.password);
+                setErrorMessage(null);
+              }}
+              className="mt-3 text-[12px] text-slate-500 hover:underline"
+            >
+              Development only: fill the seeded demo account
+            </button>
+          )}
         </div>
-      </div>
+      </main>
     </div>
-  </div>
   );
 }

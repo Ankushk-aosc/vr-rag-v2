@@ -176,6 +176,31 @@ def init_db() -> None:
                 FOREIGN KEY (family_entity_id) REFERENCES family_entities(id) ON DELETE CASCADE
             );
         """)
+                # Conversations and Messages
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS conversations (
+                id TEXT PRIMARY KEY,
+                tenant_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                title TEXT NOT NULL DEFAULT 'Financial Inquiry',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (tenant_id) REFERENCES family_entities(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS messages (
+                id TEXT PRIMARY KEY,
+                conversation_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                citations_json TEXT,
+                metadata_json TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+            );
+        """)
+
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS document_meta (
                 document_id TEXT PRIMARY KEY,
@@ -196,6 +221,20 @@ def init_db() -> None:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_doc_acl ON document_acl(document_id, family_entity_id);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_audit_family ON audit_events(family_entity_id);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_events(user_id);")
+
+        # Document security metadata for ABAC: owner and classification. Existing rows take their
+        # classification from the ACL (admin-only documents are "restricted"), matching migration 008.
+        cursor.execute("PRAGMA table_info(documents);")
+        doc_cols = [c[1] for c in cursor.fetchall()]
+        if "owner_user_id" not in doc_cols:
+            cursor.execute("ALTER TABLE documents ADD COLUMN owner_user_id TEXT;")
+        if "classification" not in doc_cols:
+            cursor.execute("ALTER TABLE documents ADD COLUMN classification TEXT NOT NULL DEFAULT 'confidential';")
+            cursor.execute(
+                "UPDATE documents SET classification = 'restricted' WHERE id IN "
+                "(SELECT document_id FROM document_acl WHERE allowed_role = 'family_admin');"
+            )
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_documents_family_class ON documents(family_entity_id, classification);")
 
         # LLM Usage (Token budget & cost tracking)
         cursor.execute("""
@@ -312,7 +351,11 @@ def delete_document(document_id: str) -> bool:
 
 
 def insert_document_acl(document_id: str, family_entity_id: str, allowed_role: str) -> None:
-    get_document_repository().insert_document_acl(document_id, family_entity_id, allowed_role)
+    repo = get_document_repository()
+    repo.insert_document_acl(document_id, family_entity_id, allowed_role)
+    # An admin-only ACL and the "restricted" classification are the same rule; keep them in step
+    if allowed_role == "family_admin":
+        repo.set_document_classification(document_id, "restricted")
 
 
 def get_document_allowed_roles(document_id: str, family_entity_id: str) -> List[str]:
@@ -333,6 +376,11 @@ def get_chunk_ids_for_document(document_id: str, family_entity_id: str) -> List[
 
 def get_documents_by_entity(entity_id: str, user_role: str) -> List[Dict[str, Any]]:
     return get_document_repository().get_documents_by_entity(entity_id, user_role)
+
+
+def get_authorized_document_ids(family_entity_id: str, classifications: List[str]) -> List[str]:
+    """Ids of one tenant's usable documents whose classification is in the caller's clearance (DB-side filter)."""
+    return get_document_repository().get_authorized_document_ids(family_entity_id, classifications)
 
 
 def get_all_documents() -> List[Dict[str, Any]]:
@@ -423,3 +471,77 @@ def get_document_meta(document_id: str) -> Optional[Dict[str, Any]]:
 
 def list_document_meta(family_entity_id: str) -> Dict[str, Dict[str, Any]]:
     return get_local_index_repository().list_document_meta(family_entity_id)
+
+
+# --- Conversations & Messages (Tenant & User scoped) ---
+
+def create_conversation(tenant_id: str, user_id: str, title: str = "Financial Inquiry") -> Dict[str, Any]:
+    import uuid
+    conv_id = str(uuid.uuid4())
+    with get_db_connection() as conn:
+        conn.execute(
+            "INSERT INTO conversations (id, tenant_id, user_id, title) VALUES (?, ?, ?, ?);",
+            (conv_id, tenant_id, user_id, title)
+        )
+        conn.commit()
+    return {"id": conv_id, "tenant_id": tenant_id, "user_id": user_id, "title": title}
+
+
+def get_conversation(conversation_id: str, tenant_id: str, user_id: str) -> Optional[Dict[str, Any]]:
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, tenant_id, user_id, title, created_at FROM conversations WHERE id = ? AND tenant_id = ? AND user_id = ?;",
+            (conversation_id, tenant_id, user_id)
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
+def list_conversations(tenant_id: str, user_id: str) -> List[Dict[str, Any]]:
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, tenant_id, user_id, title, created_at FROM conversations WHERE tenant_id = ? AND user_id = ? ORDER BY created_at DESC;",
+            (tenant_id, user_id)
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+def delete_conversation(conversation_id: str, tenant_id: str, user_id: str) -> bool:
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM conversations WHERE id = ? AND tenant_id = ? AND user_id = ?;",
+            (conversation_id, tenant_id, user_id)
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def add_message(
+    conversation_id: str,
+    role: str,
+    content: str,
+    citations_json: Optional[str] = None,
+    metadata_json: Optional[str] = None
+) -> Dict[str, Any]:
+    import uuid
+    msg_id = str(uuid.uuid4())
+    with get_db_connection() as conn:
+        conn.execute(
+            "INSERT INTO messages (id, conversation_id, role, content, citations_json, metadata_json) VALUES (?, ?, ?, ?, ?, ?);",
+            (msg_id, conversation_id, role, content, citations_json, metadata_json)
+        )
+        conn.commit()
+    return {"id": msg_id, "conversation_id": conversation_id, "role": role, "content": content}
+
+
+def list_messages(conversation_id: str) -> List[Dict[str, Any]]:
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, conversation_id, role, content, citations_json, metadata_json, created_at FROM messages WHERE conversation_id = ? ORDER BY created_at ASC;",
+            (conversation_id,)
+        )
+        return [dict(r) for r in cur.fetchall()]

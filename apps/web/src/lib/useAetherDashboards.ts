@@ -9,7 +9,7 @@ import { now } from "./chatHelpers";
 
 interface UseAetherDashboardsOptions {
   selectedEntity: string;
-  activeView: "spatial" | "ledger";
+  activeView: string;
   messagesRef: React.MutableRefObject<ChatMessage[]>;
   engineRef: React.MutableRefObject<VoiceEngine | null>;
   setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>;

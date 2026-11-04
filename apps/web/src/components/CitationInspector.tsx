@@ -1,8 +1,9 @@
 "use client";
 
-import React from "react";
-import { BookOpen, FileText, Table, X, ShieldCheck } from "lucide-react";
+import React, { useEffect, useRef } from "react";
+import { X } from "lucide-react";
 import { CitationItem } from "../types";
+import { citationLocation } from "../lib/citations";
 
 interface CitationInspectorProps {
   citation: CitationItem | null;
@@ -10,160 +11,83 @@ interface CitationInspectorProps {
   theme?: "dark" | "light";
 }
 
-export function CitationInspector({ citation, onClose, theme = "dark" }: CitationInspectorProps) {
+/** Shows the exact passage an answer cites, as returned by the API. Rendered as text, never HTML. */
+export function CitationInspector({ citation, onClose, theme = "light" }: CitationInspectorProps) {
+  const panelRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!citation) return;
+    const previous = document.activeElement as HTMLElement | null;
+    panelRef.current?.focus();
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      previous?.focus?.();
+    };
+  }, [citation, onClose]);
+
   if (!citation) return null;
   const isLight = theme === "light";
+  const muted = isLight ? "text-slate-500" : "text-slate-400";
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-2xl animate-in fade-in duration-200">
+    <div className="fixed inset-0 z-[60] flex justify-end bg-slate-900/40" onMouseDown={onClose}>
       <div
-        className={`apple-glass w-full max-w-2xl rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh] border transition-all ${
-          isLight ? "bg-white/95 border-black/10 text-black shadow-xl" : "border-white/10 text-white"
+        ref={panelRef}
+        tabIndex={-1}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="citation-title"
+        onMouseDown={(e) => e.stopPropagation()}
+        className={`w-full max-w-xl h-full flex flex-col border-l shadow-xl focus:outline-none ${
+          isLight ? "bg-white border-slate-200 text-slate-900" : "bg-[#0F172A] border-slate-700 text-slate-100"
         }`}
       >
-        {/* Apple Sheet Header */}
-        <div
-          className={`flex items-center justify-between px-6 py-4 border-b ${
-            isLight ? "border-black/10 bg-black/[0.02]" : "border-white/10 bg-black/40"
-          }`}
-        >
-          <div className="flex items-center space-x-3">
-            <div className="w-8 h-8 rounded-full bg-[#D4AF37]/15 border border-[#D4AF37]/30 flex items-center justify-center">
-              <BookOpen className="w-4 h-4 text-[#D4AF37]" />
-            </div>
-            <div>
-              <h3 className="font-semibold text-sm sm:text-base tracking-tight">
-                Verified Provenance Inspector
-              </h3>
-              <p className={`text-[11px] ${isLight ? "text-black/50" : "text-white/50"}`}>
-                Ground-truth excerpt from host repository
-              </p>
-            </div>
+        <div className={`flex items-start justify-between gap-3 px-5 py-4 border-b ${isLight ? "border-slate-200" : "border-slate-800"}`}>
+          <div className="min-w-0">
+            <div className={`text-[12px] font-semibold uppercase tracking-wide ${muted}`}>Source</div>
+            <h2 id="citation-title" className="text-[16px] font-semibold break-words">
+              {citation.document_name}
+            </h2>
+            <p className={`text-[13px] ${muted}`}>{citationLocation(citation)}</p>
           </div>
           <button
             onClick={onClose}
-            aria-label="Close modal"
-            className={`p-2 rounded-full transition-colors ${
-              isLight ? "text-black/60 hover:text-black hover:bg-black/5" : "text-white/60 hover:text-white hover:bg-white/10"
-            }`}
+            aria-label="Close source"
+            className={`p-1.5 rounded ${isLight ? "text-slate-500 hover:bg-slate-100" : "text-slate-400 hover:bg-slate-800"}`}
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* Content Body */}
-        <div className="p-6 space-y-5 overflow-y-auto flex-1">
-          {/* Metadata Grid */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs">
-            <div
-              className={`p-3 rounded-2xl border ${
-                isLight ? "bg-black/[0.02] border-black/5" : "bg-white/[0.03] border-white/5"
-              }`}
-            >
-              <span className={`block text-[10px] uppercase font-medium tracking-wider ${isLight ? "text-black/40" : "text-white/40"}`}>
-                Document
-              </span>
-              <span className="font-semibold truncate block mt-0.5" title={citation.document_name}>
-                {citation.document_name}
-              </span>
-            </div>
-
-            <div
-              className={`p-3 rounded-2xl border ${
-                isLight ? "bg-black/[0.02] border-black/5" : "bg-white/[0.03] border-white/5"
-              }`}
-            >
-              <span className={`block text-[10px] uppercase font-medium tracking-wider ${isLight ? "text-black/40" : "text-white/40"}`}>
-                Page
-              </span>
-              <span className="font-semibold text-[#D4AF37] block mt-0.5">
-                Page {citation.page_number}
-              </span>
-            </div>
-
-            <div
-              className={`p-3 rounded-2xl border ${
-                isLight ? "bg-black/[0.02] border-black/5" : "bg-white/[0.03] border-white/5"
-              }`}
-            >
-              <span className={`block text-[10px] uppercase font-medium tracking-wider ${isLight ? "text-black/40" : "text-white/40"}`}>
-                Structure
-              </span>
-              <span className={`font-semibold flex items-center space-x-1.5 mt-0.5 ${isLight ? "text-[#6D28D9]" : "text-[#A78BFA]"}`}>
-                {citation.is_table ? <Table className="w-3.5 h-3.5" /> : <FileText className="w-3.5 h-3.5" />}
-                <span>{citation.is_table ? "Financial Table" : "Text Passage"}</span>
-              </span>
-            </div>
-
-            <div
-              className={`p-3 rounded-2xl border ${
-                isLight ? "bg-black/[0.02] border-black/5" : "bg-white/[0.03] border-white/5"
-              }`}
-            >
-              <span className={`block text-[10px] uppercase font-medium tracking-wider ${isLight ? "text-black/40" : "text-white/40"}`}>
-                Chunk Hash
-              </span>
-              <span className={`font-mono text-[10px] truncate block mt-0.5 ${isLight ? "text-black/50" : "text-white/50"}`} title={citation.chunk_id}>
-                {citation.chunk_id}
-              </span>
-            </div>
+        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+          <div>
+            <div className={`text-[12px] font-semibold mb-1.5 ${muted}`}>Cited passage</div>
+            {citation.snippet ? (
+              <pre
+                className={`p-4 rounded-md border text-[13px] leading-relaxed whitespace-pre-wrap break-words font-mono ${
+                  isLight ? "bg-slate-50 border-slate-200 text-slate-800" : "bg-slate-900 border-slate-800 text-slate-200"
+                }`}
+              >
+                {citation.snippet}
+              </pre>
+            ) : (
+              <p className={`text-[13px] ${muted}`}>No passage text was returned for this source.</p>
+            )}
           </div>
-
-          {/* Excerpt Container */}
-          <div className="space-y-2">
-            <div className={`flex items-center justify-between text-xs ${isLight ? "text-black/50" : "text-white/50"}`}>
-              <span className="font-medium uppercase tracking-wider text-[10px]">
-                Atomic Document Segment:
-              </span>
-              <span className="font-mono text-[10px]">
-                {citation.snippet.length} characters
-              </span>
-            </div>
-            <div
-              className={`p-5 rounded-2xl border font-mono text-xs sm:text-[13px] leading-relaxed whitespace-pre-wrap selection:bg-[#7C3AED]/30 ${
-                isLight
-                  ? "bg-[#F7F7FA] border-black/10 text-black"
-                  : "bg-[#0A0A0D] border-white/10 text-white/90"
-              }`}
-            >
-              {citation.snippet}
-            </div>
-          </div>
-
-          {/* Privacy & Governance Note */}
-          <div
-            className={`flex items-start space-x-3 text-xs p-4 rounded-2xl border ${
-              isLight
-                ? "bg-black/[0.02] border-black/5 text-black/70"
-                : "bg-white/[0.02] border-white/5 text-white/60"
-            }`}
-          >
-            <ShieldCheck className={`w-4 h-4 flex-shrink-0 mt-0.5 ${isLight ? "text-[#6D28D9]" : "text-[#A78BFA]"}`} />
-            <p className="leading-relaxed text-[11px]">
-              <strong className={isLight ? "text-black font-semibold" : "text-white font-medium"}>
-                Australian Privacy Guarantee:
-              </strong>{" "}
-              This excerpt was retrieved directly from the verified file stored on this host device. No confidential financial figures (TFNs, BSBs, balances) were submitted to public AI models without local authorization.
-            </p>
-          </div>
-        </div>
-
-        {/* Apple Modal Footer */}
-        <div
-          className={`px-6 py-4 border-t flex justify-end ${
-            isLight ? "border-black/10 bg-black/[0.02]" : "border-white/10 bg-black/40"
-          }`}
-        >
-          <button
-            onClick={onClose}
-            className={`px-5 py-2 rounded-full text-xs font-semibold transition-all shadow-md active:scale-95 ${
-              isLight
-                ? "bg-[#581C87] text-white hover:bg-[#4C1D95]"
-                : "bg-white text-black hover:bg-white/90"
-            }`}
-          >
-            Dismiss
-          </button>
+          <dl className="grid grid-cols-3 gap-x-4 gap-y-1.5 text-[12px]">
+            <dt className={muted}>Type</dt>
+            <dd className="col-span-2">{citation.is_table ? "Table" : "Text"}</dd>
+            {typeof citation.score === "number" && (
+              <>
+                <dt className={muted}>Relevance score</dt>
+                <dd className="col-span-2 tabular-nums">{citation.score.toFixed(3)}</dd>
+              </>
+            )}
+            <dt className={muted}>Passage ID</dt>
+            <dd className="col-span-2 font-mono break-all">{citation.chunk_id}</dd>
+          </dl>
         </div>
       </div>
     </div>

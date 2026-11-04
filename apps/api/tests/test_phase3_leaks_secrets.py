@@ -156,7 +156,7 @@ def test_s5_audit_trail_tenant_isolation_and_rbac(client):
     # 3. Non-admin (Member A) requests entity audit trail -> 403 Forbidden
     res = client.get(f"/api/auth/audit?family_entity_id={entity_a}", headers={"Authorization": f"Bearer {token_member}"})
     assert res.status_code == 403
-    assert "Permission denied: Only family_admin" in res.json()["detail"]
+    assert res.json()["detail"] == "Access denied."  # generic denial (no policy detail leaked)
 
     # 4. Non-admin (Member A) calls /api/auth/audit without param -> gets only their own user-scoped events
     res = client.get("/api/auth/audit", headers={"Authorization": f"Bearer {token_member}"})

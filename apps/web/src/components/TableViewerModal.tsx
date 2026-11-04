@@ -9,8 +9,6 @@ import {
   ChevronsLeft,
   ChevronsRight,
   X,
-  FileSpreadsheet,
-  ShieldCheck,
   Loader2,
   RefreshCw,
 } from "lucide-react";
@@ -31,6 +29,9 @@ export function TableViewerModal({ document, onClose, theme = "dark" }: TableVie
   const [search, setSearch] = useState<string>("");
   const [debouncedSearch, setDebouncedSearch] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(true);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [isSample, setIsSample] = useState(false);
+  const [retry, setRetry] = useState(0);
   const [isPending, startTransition] = useTransition();
 
   // Debounce search input by 350ms
@@ -47,13 +48,17 @@ export function TableViewerModal({ document, onClose, theme = "dark" }: TableVie
     if (!document) return;
     let cancelled = false;
     setLoading(true);
+    setLoadFailed(false);
+    setIsSample(false);
 
     fetchDocumentTable(document.id, page, pageSize, debouncedSearch).then((res) => {
       if (!cancelled) {
         if (res) {
           setData(res);
-        } else if (document.columns && document.sample_rows) {
-          // Fallback to sample rows if offline
+        } else if (document.columns?.length && document.sample_rows?.length) {
+          // Full table unavailable: show the stored sample, clearly labelled as such
+          setLoadFailed(true);
+          setIsSample(true);
           setData({
             document_id: document.id,
             filename: document.original_name,
@@ -64,6 +69,9 @@ export function TableViewerModal({ document, onClose, theme = "dark" }: TableVie
             page_size: pageSize,
             total_pages: 1,
           });
+        } else {
+          setLoadFailed(true);
+          setData(null);
         }
         setLoading(false);
       }
@@ -72,20 +80,26 @@ export function TableViewerModal({ document, onClose, theme = "dark" }: TableVie
     return () => {
       cancelled = true;
     };
-  }, [document, page, pageSize, debouncedSearch]);
+  }, [document, page, pageSize, debouncedSearch, retry]);
+
+  useEffect(() => {
+    if (!document) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [document, onClose]);
 
   if (!document) return null;
 
   const totalRows = data?.total_rows ?? 0;
   const totalPages = data?.total_pages ?? 1;
-  const startRow = Math.min((page - 1) * pageSize + 1, totalRows);
-  const endRow = Math.min(startRow + (data?.rows.length || 0) - 1, totalRows);
+  const rowsHere = data?.rows.length ?? 0;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-black/80 backdrop-blur-2xl animate-in fade-in duration-200">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-slate-900/40">
       <div
-        className={`apple-glass w-full max-w-6xl rounded-3xl shadow-2xl overflow-hidden flex flex-col max-h-[92vh] border transition-all ${
-          isLight ? "bg-white/95 border-black/10 text-black shadow-2xl" : "border-white/10 text-white"
+        className={`w-full max-w-6xl rounded-lg shadow-xl overflow-hidden flex flex-col max-h-[92vh] border transition-all ${
+          isLight ? "bg-white border-slate-200 text-slate-900" : "bg-[#0F172A] border-slate-700 text-slate-100"
         }`}
       >
         {/* Header Bar */}
@@ -95,19 +109,14 @@ export function TableViewerModal({ document, onClose, theme = "dark" }: TableVie
           }`}
         >
           <div className="flex items-center space-x-3 min-w-0">
-            <div className="w-10 h-10 rounded-2xl bg-[#7C3AED]/15 border border-[#7C3AED]/30 flex items-center justify-center flex-shrink-0">
-              <FileSpreadsheet className="w-5 h-5 text-[#7C3AED]" />
-            </div>
             <div className="min-w-0">
-              <h3 className="font-bold text-base sm:text-lg tracking-tight truncate" title={document.original_name}>
+              <h3 className="font-semibold text-[16px] tracking-tight truncate" title={document.original_name}>
                 {document.original_name}
               </h3>
               <div className="flex items-center space-x-2 text-xs">
                 <span className={`font-mono ${isLight ? "text-black/50" : "text-white/50"}`}>
-                  {totalRows > 0 ? `${totalRows.toLocaleString()} Verified Records` : "Tabular Ledger"}
+                  {totalPages > 1 ? `Page ${page} of ${totalPages}` : "Table"}
                 </span>
-                <span className="text-[#D4AF37]">•</span>
-                <span className="text-[#D4AF37] font-medium">Pinecone Cloud Storage</span>
               </div>
             </div>
           </div>
@@ -127,8 +136,8 @@ export function TableViewerModal({ document, onClose, theme = "dark" }: TableVie
                 onChange={(e) => setSearch(e.target.value)}
                 className={`w-full pl-8 pr-8 py-1.5 rounded-full text-xs transition-all border outline-none ${
                   isLight
-                    ? "bg-black/[0.04] border-black/10 text-black focus:border-[#7C3AED] focus:bg-white"
-                    : "bg-white/[0.06] border-white/10 text-white focus:border-[#7C3AED] focus:bg-white/[0.1]"
+                    ? "bg-black/[0.04] border-black/10 text-black focus:border-[#2563EB] focus:bg-white"
+                    : "bg-white/[0.06] border-white/10 text-white focus:border-[#2563EB] focus:bg-white/[0.1]"
                 }`}
               />
               {search && (
@@ -157,10 +166,23 @@ export function TableViewerModal({ document, onClose, theme = "dark" }: TableVie
         <div className="flex-1 overflow-auto relative">
           {loading ? (
             <div className="py-24 flex flex-col items-center justify-center space-y-3">
-              <Loader2 className="w-8 h-8 animate-spin text-[#7C3AED]" />
+              <Loader2 className="w-6 h-6 animate-spin text-[#2563EB]" aria-hidden />
               <p className={`text-xs font-mono ${isLight ? "text-black/50" : "text-white/50"}`}>
-                Retrieving ledger page from Pinecone Cloud...
+                Loading rows…
               </p>
+            </div>
+          ) : loadFailed && !data ? (
+            <div className="py-20 px-6 text-center" role="alert">
+              <p className="text-sm font-semibold">We couldn&apos;t load this table</p>
+              <p className={`text-[13px] mt-1 ${isLight ? "text-slate-500" : "text-slate-400"}`}>
+                The financial intelligence service is temporarily unavailable.
+              </p>
+              <button
+                onClick={() => setRetry((n) => n + 1)}
+                className="mt-3 h-9 px-3.5 rounded-md bg-[#2563EB] text-white text-[13px] font-medium"
+              >
+                Try again
+              </button>
             </div>
           ) : !data || data.rows.length === 0 ? (
             <div className="py-24 text-center space-y-3">
@@ -178,7 +200,7 @@ export function TableViewerModal({ document, onClose, theme = "dark" }: TableVie
               {search && (
                 <button
                   onClick={() => setSearch("")}
-                  className="mt-2 px-4 py-1.5 rounded-full bg-[#7C3AED] text-white font-semibold text-xs"
+                  className="mt-2 px-4 py-1.5 rounded-full bg-[#2563EB] text-white font-semibold text-xs"
                 >
                   Clear Search Filter
                 </button>
@@ -225,7 +247,7 @@ export function TableViewerModal({ document, onClose, theme = "dark" }: TableVie
                             : isLight
                             ? "bg-transparent"
                             : "bg-white/[0.03]"
-                        } ${isLight ? "hover:bg-purple-500/10" : "hover:bg-purple-500/15"}`}
+                        } ${isLight ? "hover:bg-slate-50" : "hover:bg-slate-800/50"}`}
                       >
                         <td className="px-4 py-2.5 text-center text-[10px] text-muted-foreground tabular-numbers">
                           {rowNum}
@@ -233,7 +255,6 @@ export function TableViewerModal({ document, onClose, theme = "dark" }: TableVie
                         {row.map((val, cIdx) => {
                           const colName = data.columns[cIdx] || "";
                           const isAmount = /amount|price|balance|cost|fee|salary/i.test(colName);
-                          const isFraud = /fraud/i.test(colName);
                           const valStr = String(val ?? "").trim();
 
                           return (
@@ -241,23 +262,13 @@ export function TableViewerModal({ document, onClose, theme = "dark" }: TableVie
                               key={cIdx}
                               className={`px-4 py-2.5 whitespace-nowrap text-xs ${
                                 isAmount
-                                  ? "text-right font-semibold tabular-numbers text-[#10B981]"
+                                  ? "text-right tabular-numbers"
                                   : isLight
                                   ? "text-black/80"
                                   : "text-white/80"
                               }`}
                             >
-                              {isFraud && valStr.toLowerCase() === "yes" ? (
-                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-500/20 text-red-400 border border-red-500/30">
-                                  FRAUD
-                                </span>
-                              ) : isFraud && valStr.toLowerCase() === "no" ? (
-                                <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-500/15 text-emerald-400">
-                                  Legit
-                                </span>
-                              ) : (
-                                valStr || "—"
-                              )}
+                              {valStr || "—"}
                             </td>
                           );
                         })}
@@ -277,16 +288,16 @@ export function TableViewerModal({ document, onClose, theme = "dark" }: TableVie
           }`}
         >
           <div className="flex items-center space-x-2 text-muted-foreground text-[11px]">
-            <ShieldCheck className="w-4 h-4 text-[#D4AF37]" />
             <span>
-              {totalRows > 0 ? (
+              {isSample ? (
+                <span className="text-amber-700">Full table unavailable. Showing the {totalRows}-row sample stored at upload.</span>
+              ) : rowsHere > 0 ? (
                 <>
-                  Showing records <strong className={isLight ? "text-black" : "text-white"}>{startRow}</strong> to{" "}
-                  <strong className={isLight ? "text-black" : "text-white"}>{endRow}</strong> of{" "}
-                  <strong className={isLight ? "text-black" : "text-white"}>{totalRows.toLocaleString()}</strong>
+                  {rowsHere.toLocaleString()} row{rowsHere === 1 ? "" : "s"} on this page
+                  {debouncedSearch && totalRows > rowsHere ? ` · ${totalRows.toLocaleString()} matches in total` : ""}
                 </>
               ) : (
-                "Verified sovereign record"
+                "No rows"
               )}
             </span>
           </div>
@@ -359,7 +370,7 @@ export function TableViewerModal({ document, onClose, theme = "dark" }: TableVie
               onClick={onClose}
               className={`ml-4 px-4 py-1.5 rounded-full font-semibold text-xs transition-all shadow-md active:scale-95 ${
                 isLight
-                  ? "bg-[#581C87] text-white hover:bg-[#4C1D95]"
+                  ? "bg-[#2563EB] text-white hover:bg-[#1D4ED8]"
                   : "bg-white text-black hover:bg-white/90"
               }`}
             >

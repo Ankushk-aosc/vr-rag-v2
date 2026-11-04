@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.db import sqlite
-from app.routers import auth, dashboards, documents, providers, query, voice
+from app.routers import auth, conversations, dashboards, documents, providers, query, voice
 from app.providers import factory
 from app.services import auth as auth_service, datasets, embeddings
 from app.services import voice as voice_service
@@ -141,6 +141,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 # Include routers
 app.include_router(auth.router)
+app.include_router(conversations.router)
 app.include_router(documents.router)
 app.include_router(query.router)
 app.include_router(voice.router)
@@ -181,6 +182,7 @@ async def health_check():
         "status": "healthy",
         "privacy_mode": privacy["privacy_mode"],
         "data_leaves_deployment": privacy["data_leaves_deployment"],
+        "allow_browser_speech": bool(getattr(settings, "ALLOW_BROWSER_SPEECH", True)),
     }
 
 

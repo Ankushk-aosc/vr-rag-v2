@@ -1,11 +1,11 @@
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Tuple
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 
 from app.schemas.document import BatchDocumentUploadResponse, DocumentResponse, DocumentTableResponse, DocumentUploadResponse
 # chunker, embeddings, extractor and pinecone_service stay importable from here: tests patch them via this module
-from app.services import auth, chunker, embeddings, extractor, pinecone_service, vector_index  # noqa: F401
+from app.services import auth, authorization, chunker, embeddings, extractor, pinecone_service, vector_index  # noqa: F401
 from app.services.storage import storage_service
 from app.services.lexical_index import lexical_index
 from app.services.safe_errors import log_with_reference, safe_message
@@ -22,155 +22,122 @@ logger = logging.getLogger(__name__)
 # Document ACL values an uploader may choose (Audit I-07): family-wide, or restricted to admins.
 # Advisers read family-wide documents via the member tag, so they are not a separate ACL value.
 UploadAclRole = Literal["family_member", "family_admin"]
+# Optional explicit sensitivity tier; when omitted it follows the ACL choice (admin-only = restricted)
+Classification = Literal["internal", "confidential", "restricted"]
 
 
-def _validate_uploader(family_entity_id: str, current_user: Dict[str, Any]) -> str:
-    user_memberships = current_user.get("memberships") or []
-    if not user_memberships:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User has no family memberships."
-        )
-    target_membership = next((m for m in user_memberships if m["family_entity_id"] == family_entity_id), None)
-    if not target_membership:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Access denied: You do not hold active membership in family entity '{family_entity_id}'."
-        )
-    if target_membership.get("role") == "read_only_adviser":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Read-only advisers are not permitted to upload documents."
-        )
-    return target_membership.get("role", "family_member")
+def _upload_subject(family_entity_id: Optional[str], current_user: Dict[str, Any],
+                    allowed_role: str, classification: Optional[str]) -> Tuple[authorization.Subject, str, str]:
+    """RBAC document.upload AND ABAC (own tenant, classification within the uploader's clearance).
+    The family comes from the caller's memberships; the owner is the authenticated user."""
+    subject = authorization.resolve_subject(current_user, family_entity_id, action=authorization.DOCUMENT_UPLOAD)
+    cls = (classification or authorization.classification_for_acl(allowed_role)).lower()
+    resource = authorization.Resource("document", None, subject.family_entity_id, subject.user_id, cls)
+    authorization.authorize(subject, authorization.DOCUMENT_UPLOAD, resource)
+    return subject, cls, authorization.acl_role_for(cls)
 
 
-def _membership_role(family_entity_id: str, current_user: Dict[str, Any]) -> str:
-    """Returns the caller's role in the entity, or raises 403 if they are not a member."""
-    membership = next(
-        (m for m in (current_user.get("memberships") or []) if m["family_entity_id"] == family_entity_id),
-        None,
-    )
-    if not membership:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Access denied: You do not hold active membership in family entity '{family_entity_id}'."
-        )
-    return membership.get("role", "family_member")
+def _read_scope(family_entity_id: Optional[str], current_user: Dict[str, Any]) -> authorization.AccessScope:
+    subject = authorization.resolve_subject(current_user, family_entity_id, action=authorization.DOCUMENT_READ)
+    return authorization.build_access_scope(subject, authorization.DOCUMENT_READ)
 
 
-def _role_can_view(acl_roles: List[str], role: str) -> bool:
-    """Same rule as the SQL listing query: admins see everything, others need a matching or member-wide ACL."""
-    if role == "family_admin":
-        return True
-    return any(r in (role, "family_member") for r in acl_roles)
-
-
-def _list_entity_documents(family_entity_id: str, role: str) -> List[Dict[str, Any]]:
+def _list_entity_documents(scope: authorization.AccessScope) -> List[Dict[str, Any]]:
     """
-    Documents for one entity, ACL-filtered for the caller's role against SQL (Audit I-05).
-    Pinecone registry records (richer display metadata) come first; every SQL-visible document the
-    registry did not return is appended, so Pinecone being off, empty, capped or missing unindexed
-    uploads never hides documents (Audit I-04, I-08).
+    Documents the scope may read, decided in SQL (tenant + classification, Audit I-05). Registry
+    records (richer display metadata) are merged in only for ids the scope already allows, so a
+    vector store being off, empty or capped never hides or adds documents (Audit I-04, I-08).
     """
-    # Failed ingestions keep their SQL row for reconciliation but are not usable documents
-    sql_docs = [
-        d for d in sqlite.get_documents_by_entity(family_entity_id, role)
-        if d.get("status") != "failed"
-    ]
-
+    allowed = scope.allowed_document_ids
+    tenant_sql_docs = sqlite.get_documents_by_entity(scope.family_entity_id, authorization.FAMILY_ADMIN)
+    sql_ids = {d["id"] for d in tenant_sql_docs}
+    sql_docs = [d for d in tenant_sql_docs if d["id"] in allowed]
+    # Legacy registry-only records (no SQL row, no ACL) count as restricted: admins only
+    legacy_ok = authorization.RESTRICTED in scope.allowed_classifications
     try:
-        cloud_docs = vector_index.list_documents(family_entity_id)
+        cloud_docs = [
+            d for d in vector_index.list_documents(scope.family_entity_id)
+            if d.get("id") in allowed or (legacy_ok and d.get("id") not in sql_ids)
+        ]
     except Exception as e:
-        logger.debug(f"Pinecone document listing unavailable: {e}")
+        logger.debug(f"Vector registry listing unavailable: {e}")
         cloud_docs = []
-
-    if cloud_docs and role != "family_admin":
-        # Registry records carry no ACL; non-admins only see documents the SQL ACL grants them
-        visible_ids = {d["id"] for d in sql_docs}
-        cloud_docs = [d for d in cloud_docs if d.get("id") in visible_ids]
-
     cloud_ids = {d.get("id") for d in cloud_docs}
     return cloud_docs + [d for d in sql_docs if d["id"] not in cloud_ids]
 
 
-def _load_authorized_document(document_id: str, current_user: Dict[str, Any]) -> Dict[str, Any]:
+def _authorized_document(document_id: str, current_user: Dict[str, Any], action: str) -> Dict[str, Any]:
     """
-    Loads one document for reading after tenant and ACL checks (Audit I-05).
-    The SQL system of record decides tenancy and access; the Pinecone registry only contributes
-    display metadata (columns, sample rows, preview). Works with Pinecone unconfigured.
+    Loads one document and authorizes `action` on it (RBAC AND ABAC). SQL decides tenancy and
+    classification; a legacy registry-only record is treated as restricted (admins only, fail closed).
     """
     sql_doc = sqlite.get_document_by_id(document_id)
     cloud_doc = vector_index.get_document(document_id)
-    if not sql_doc and not cloud_doc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
-    if sql_doc and sql_doc.get("status") == "failed":
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
-
-    doc_entity = (sql_doc or cloud_doc).get("family_entity_id")
-    membership = next(
-        (m for m in (current_user.get("memberships") or []) if m["family_entity_id"] == doc_entity),
-        None,
-    )
-    if not membership:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied: You are not authorized to view this document."
-        )
-
-    role = membership.get("role", "family_member")
     if sql_doc:
-        allowed = _role_can_view(sqlite.get_document_allowed_roles(document_id, doc_entity), role)
+        authorization.authorize_document(current_user, document_id, action)
+    elif cloud_doc:
+        legacy = {**cloud_doc, "classification": authorization.RESTRICTED}
+        resource = authorization.document_resource(legacy)
+        subject = authorization.resolve_subject(current_user, resource.family_entity_id, action=action)
+        authorization.authorize(subject, action, resource)
     else:
-        # Legacy registry-only record with no ACL row: fail closed to admins
-        allowed = role == "family_admin"
-    if not allowed:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Permission denied: Your role is not permitted to view this document."
-        )
-
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
     # SQL fields win on overlap so tenancy/status always reflect the system of record
     return {**(cloud_doc or {}), **(sql_doc or {})}
+
+
+def _load_authorized_document(document_id: str, current_user: Dict[str, Any]) -> Dict[str, Any]:
+    doc = _authorized_document(document_id, current_user, authorization.DOCUMENT_READ)
+    try:
+        sqlite.log_audit_event(action="DOCUMENT_READ", user_id=current_user.get("id"),
+                               family_entity_id=doc.get("family_entity_id"), resource_id=document_id)
+    except Exception as e:  # auditing a read must never block it
+        logger.warning("Could not record DOCUMENT_READ audit event: %s", type(e).__name__)
+    return doc
 
 
 @router.post("/upload", response_model=DocumentUploadResponse, status_code=status.HTTP_201_CREATED)
 async def upload_document(
     file: UploadFile = File(...),
-    family_entity_id: str = Form("default_family"),
+    family_entity_id: Optional[str] = Form(None),
     allowed_role: UploadAclRole = Form("family_member"),
+    classification: Optional[Classification] = Form(None),
     current_user: Dict[str, Any] = Depends(auth.get_current_user)
 ):
-    _validate_uploader(family_entity_id, current_user)
+    subject, cls, acl_role = _upload_subject(family_entity_id, current_user, allowed_role, classification)
     return await process_single_upload(
         file=file,
-        family_entity_id=family_entity_id,
-        allowed_role=allowed_role,
-        user_id=current_user.get("id")
+        family_entity_id=subject.family_entity_id,
+        allowed_role=acl_role,
+        user_id=subject.user_id,
+        classification=cls,
     )
 
 
 @router.post("/upload-batch", response_model=BatchDocumentUploadResponse, status_code=status.HTTP_201_CREATED)
 async def upload_documents_batch(
     files: List[UploadFile] = File(...),
-    family_entity_id: str = Form("default_family"),
+    family_entity_id: Optional[str] = Form(None),
     allowed_role: UploadAclRole = Form("family_member"),
+    classification: Optional[Classification] = Form(None),
     current_user: Dict[str, Any] = Depends(auth.get_current_user)
 ):
     """
     Multi-file batch upload:
-    Ingests multiple files into Pinecone Cloud with independent 100MB validation per file.
+    Ingests multiple files with independent 100MB validation per file. Authorization is decided
+    once for the batch, before any file is read.
     """
-    _validate_uploader(family_entity_id, current_user)
+    subject, cls, acl_role = _upload_subject(family_entity_id, current_user, allowed_role, classification)
     successful_docs = []
     errors = []
     for f in files:
         try:
             res = await process_single_upload(
                 file=f,
-                family_entity_id=family_entity_id,
-                allowed_role=allowed_role,
-                user_id=current_user.get("id")
+                family_entity_id=subject.family_entity_id,
+                allowed_role=acl_role,
+                user_id=subject.user_id,
+                classification=cls,
             )
             successful_docs.append(res.document)
         except HTTPException as he:
@@ -180,7 +147,7 @@ async def upload_documents_batch(
             errors.append(f"{f.filename}: {safe_message('Upload failed', ref)}")
 
     return BatchDocumentUploadResponse(
-        message=f"Processed {len(successful_docs)} of {len(files)} file(s) into Pinecone.",
+        message=f"Processed {len(successful_docs)} of {len(files)} file(s).",
         total_files=len(files),
         successful_files=len(successful_docs),
         documents=successful_docs,
@@ -196,13 +163,10 @@ async def list_documents(
     """
     List documents directly from Pinecone Cloud Registry filtered strictly by authorized family entity.
     """
-    user_memberships = current_user.get("memberships") or []
-    if not user_memberships:
+    if not current_user.get("memberships"):
         return []
-
-    target_entity = family_entity_id or user_memberships[0]["family_entity_id"]
-    role = _membership_role(target_entity, current_user)
-    return [DocumentResponse(**d) for d in _list_entity_documents(target_entity, role)]
+    scope = _read_scope(family_entity_id, current_user)
+    return [DocumentResponse(**d) for d in _list_entity_documents(scope)]
 
 
 @router.get("/suggestions", response_model=List[str])
@@ -220,9 +184,7 @@ async def get_document_suggestions(
             "Ask questions about AUD balances or portfolios"
         ]
 
-    target_entity = family_entity_id or user_memberships[0]["family_entity_id"]
-    role = _membership_role(target_entity, current_user)
-    docs = _list_entity_documents(target_entity, role)
+    docs = _list_entity_documents(_read_scope(family_entity_id, current_user))
 
     if not docs:
         return [
@@ -323,25 +285,10 @@ async def delete_document(
     document stays visible and the (idempotent) delete can simply be retried. Erasure is never
     reported for data that may still exist.
     """
+    # RBAC document.delete (family admins only) AND ABAC (same tenant, classification in clearance)
+    doc = _authorized_document(document_id, current_user, authorization.DOCUMENT_DELETE)
     sql_doc = sqlite.get_document_by_id(document_id)
-    # SQL is authoritative for tenancy; the registry only covers legacy registry-only records
-    doc = sql_doc or vector_index.get_document(document_id)
-    if not doc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
-
     doc_entity = doc.get("family_entity_id")
-    user_memberships = current_user.get("memberships") or []
-    target_membership = next((m for m in user_memberships if m["family_entity_id"] == doc_entity), None)
-    if not target_membership:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied: You are not authorized to delete documents in this entity."
-        )
-    if target_membership.get("role") != "family_admin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Permission denied: Only family_admin can delete documents from the vault."
-        )
 
     # 1. Remote tiers first: Pinecone vectors + registry, then the stored original file
     chunk_ids = sqlite.get_chunk_ids_for_document(document_id, doc_entity) if sql_doc else []

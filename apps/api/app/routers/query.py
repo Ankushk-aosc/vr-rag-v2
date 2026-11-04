@@ -3,35 +3,42 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from app.schemas.query import QueryRequest, QueryResponse
-from app.services import auth, rag_engine
+from app.services import auth, authorization, rag_engine
+from app.services.rag_orchestrator import rag_orchestrator
 from app.middleware.rate_limiter import rate_limit
 from app.middleware.token_budget import check_token_budget
 from app.services.safe_errors import log_with_reference, safe_message
 
 router = APIRouter(prefix="/api/query", tags=["Query"])
 
-# Chunks are tagged with family_admin/family_member only. A read-only adviser may read family-wide
-# documents (the same rule the listing and document endpoints apply), so it retrieves with the
-# member tag; admin-only chunks stay excluded (Audit I-07).
-RETRIEVAL_ROLE_ALIASES = {"read_only_adviser": "family_member"}
+# rag_engine's entry points can be replaced in tests; the route then calls the replacement, but only
+# after the same authorization step, with the scope it produced.
+_DEFAULT_EXECUTE_RAG_QUERY = rag_engine.execute_rag_query
+_DEFAULT_STREAM_RAG_EVENTS = rag_engine.stream_rag_events
+
+
+def resolve_scope(family_entity_id: Optional[str], current_user: Dict[str, Any]) -> authorization.AccessScope:
+    """JWT user -> tenant (from server-side memberships) -> RBAC query.execute AND ABAC -> AccessScope.
+    The requested family id only selects among the caller's own memberships."""
+    return authorization.authorize_query(current_user, family_entity_id)
 
 
 def resolve_roles(family_entity_id: str, current_user: Dict[str, Any]) -> List[str]:
-    if not current_user or not current_user.get("memberships"):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication required. Please provide a valid Bearer token."
-        )
-    matched_roles = [
-        m["role"] for m in current_user["memberships"]
-        if m["family_entity_id"] == family_entity_id
-    ]
-    if not matched_roles:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Access denied: You do not hold active membership in family entity '{family_entity_id}'."
-        )
-    return list(dict.fromkeys(RETRIEVAL_ROLE_ALIASES.get(r, r) for r in matched_roles))
+    """Retrieval role tags for callers that still pass roles (kept for older imports)."""
+    return resolve_scope(family_entity_id, current_user).retrieval_roles
+
+
+def _legacy_kwargs(request: QueryRequest, scope: authorization.AccessScope) -> Dict[str, Any]:
+    return dict(
+        question=request.question,
+        family_entity_id=scope.family_entity_id,
+        user_roles=scope.retrieval_roles,
+        top_k=request.top_k,
+        history=[h.model_dump() for h in request.history],
+        mode=request.mode,
+        user_id=scope.user_id,
+        scope=scope,
+    )
 
 
 @router.post("", response_model=QueryResponse, dependencies=[Depends(rate_limit(max_requests=45, window_seconds=60))])
@@ -39,22 +46,20 @@ async def ask_question(
     request: QueryRequest,
     current_user: Dict[str, Any] = Depends(auth.get_current_user)
 ):
-    user_roles = resolve_roles(request.family_entity_id, current_user)
-    user_id = current_user.get("id")
-    check_token_budget(request.family_entity_id, user_id)
+    scope = resolve_scope(request.family_entity_id, current_user)
+    check_token_budget(scope.family_entity_id, scope.user_id)
     try:
-        result = await rag_engine.execute_rag_query(
-            question=request.question,
-            family_entity_id=request.family_entity_id,
-            user_roles=user_roles,
-            top_k=request.top_k,
-            history=[h.model_dump() for h in request.history],
-            mode=request.mode,
-            user_id=user_id,
-        )
+        if rag_engine.execute_rag_query != _DEFAULT_EXECUTE_RAG_QUERY:
+            result = await rag_engine.execute_rag_query(**_legacy_kwargs(request, scope))
+        else:
+            result = await rag_orchestrator.execute_query(
+                question=request.question,
+                scope=scope,
+                history=[h.model_dump() for h in request.history],
+                mode=request.mode,
+                top_k=request.top_k,
+            )
         return QueryResponse(**result)
-    except rag_engine.RagError as e:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e))
     except HTTPException:
         raise
     except Exception as e:
@@ -71,24 +76,26 @@ async def ask_question_stream(
     current_user: Dict[str, Any] = Depends(auth.get_current_user)
 ):
     """
-    Server-Sent Events stream of the RAG pipeline. Each `data:` line is a JSON event:
-    stage | sources | answer | done | error  (model reasoning is never streamed, Audit I-10)
+    Server-Sent Events stream of the RAG pipeline. Authorization completes before the response
+    starts, so a denied caller gets a plain 401/403 and no stream is opened.
+    Each `data:` line is a JSON event: stage | sources | answer | done | error
     """
-    user_roles = resolve_roles(request.family_entity_id, current_user)
-    user_id = current_user.get("id")
-    check_token_budget(request.family_entity_id, user_id)
+    scope = resolve_scope(request.family_entity_id, current_user)
+    check_token_budget(scope.family_entity_id, scope.user_id)
 
     async def event_source():
         try:
-            async for event in rag_engine.stream_rag_events(
-                question=request.question,
-                family_entity_id=request.family_entity_id,
-                user_roles=user_roles,
-                top_k=request.top_k,
-                history=[h.model_dump() for h in request.history],
-                mode=request.mode,
-                user_id=user_id,
-            ):
+            if rag_engine.stream_rag_events != _DEFAULT_STREAM_RAG_EVENTS:
+                stream_gen = rag_engine.stream_rag_events(**_legacy_kwargs(request, scope))
+            else:
+                stream_gen = rag_orchestrator.execute_query_stream(
+                    question=request.question,
+                    scope=scope,
+                    history=[h.model_dump() for h in request.history],
+                    mode=request.mode,
+                    top_k=request.top_k,
+                )
+            async for event in stream_gen:
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         except HTTPException as he:
             yield f"data: {json.dumps({'type': 'error', 'message': str(he.detail), 'status_code': he.status_code})}\n\n"

@@ -1,37 +1,92 @@
 "use client";
 
 import React, { useEffect, useRef, useState } from "react";
-import { Settings2, Volume2 } from "lucide-react";
-import { useVoiceSnapshot } from "../lib/voice/voiceStore";
+import { Settings2, Volume2, AlertTriangle } from "lucide-react";
+import { canUseBrowserSpeech, useVoiceSnapshot, voiceStore } from "../lib/voice/voiceStore";
+import { readSettings, writeSettings } from "../lib/voice/voiceConfig";
 import { LevelBars } from "./LevelBars";
 
 interface VoiceSettingsProps {
   theme: "light" | "dark";
   onSetBargeIn: (on: boolean) => void;
   onSetSttMode: (mode: "auto" | "server") => void;
+  onSetBrowserSpeechOptIn?: (optIn: boolean) => void;
+  onSetWakeWord?: (on: boolean) => void;
   onTestSpeaker: () => void;
+  /** Which way the popover opens from the gear button. */
+  placement?: "above" | "below";
 }
 
-/** Gear button + popover: voice options and a quick self-check (mic level, recogniser, speaker test). */
-export function VoiceSettings({ theme, onSetBargeIn, onSetSttMode, onTestSpeaker }: VoiceSettingsProps) {
+function browserRecognitionSupported(): boolean {
+  if (typeof window === "undefined") return false;
+  const w = window as unknown as Record<string, unknown>;
+  return Boolean(w.SpeechRecognition || w.webkitSpeechRecognition);
+}
+
+/**
+ * Gear button + popover: speech recognition choice (Whisper by default, browser recognition only after
+ * explicit consent), optional wake word, interruption, and a quick self-check.
+ */
+export function VoiceSettings({
+  theme,
+  onSetBargeIn,
+  onSetSttMode,
+  onSetBrowserSpeechOptIn,
+  onSetWakeWord,
+  onTestSpeaker,
+  placement = "above",
+}: VoiceSettingsProps) {
   const [open, setOpen] = useState(false);
+  const [showPrivacyNotice, setShowPrivacyNotice] = useState(false);
   const voice = useVoiceSnapshot();
   const rootRef = useRef<HTMLDivElement | null>(null);
   const isLight = theme === "light";
-  // Browser recognition sends audio to the browser vendor's cloud; only offered in cloud mode (I-26)
-  const browserSttAllowed = voice.privacyMode === "cloud";
+
+  const browserSupported = browserRecognitionSupported();
+  const serverForbids = voice.serverAllowsBrowserSpeech === false;
+  const browserAllowed = canUseBrowserSpeech();
+  const usingBrowser = browserAllowed && voice.sttMode === "auto";
+
+  const setOptIn = (optIn: boolean) => {
+    if (onSetBrowserSpeechOptIn) {
+      onSetBrowserSpeechOptIn(optIn);
+    } else {
+      voiceStore.set({ browserSpeechOptIn: optIn });
+      writeSettings({ ...readSettings(), browserSpeechOptIn: optIn });
+    }
+  };
 
   useEffect(() => {
     if (!open) return;
     const close = (e: PointerEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
+        setOpen(false);
+        setShowPrivacyNotice(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setOpen(false);
+        setShowPrivacyNotice(false);
+      }
     };
     window.addEventListener("pointerdown", close);
-    return () => window.removeEventListener("pointerdown", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("keydown", onKey);
+    };
   }, [open]);
 
-  const row = "flex items-start justify-between gap-3";
-  const muted = isLight ? "text-black/50" : "text-white/50";
+  const muted = isLight ? "text-slate-500" : "text-slate-400";
+  const divider = isLight ? "border-slate-200" : "border-slate-700";
+  const notice = isLight
+    ? "bg-amber-50 border-amber-200 text-amber-900"
+    : "bg-amber-950/40 border-amber-800 text-amber-200";
+  const whisperWhere =
+    voice.privacyMode === "cloud"
+      ? "Transcribed by this deployment's configured Whisper service."
+      : "Transcribed by this deployment's own Whisper service.";
 
   return (
     <div ref={rootRef} className="relative" data-no-drag>
@@ -39,93 +94,180 @@ export function VoiceSettings({ theme, onSetBargeIn, onSetSttMode, onTestSpeaker
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-label="Voice settings"
-        title="Voice settings & test"
-        className={`w-9 h-9 rounded-full flex items-center justify-center transition-colors ${
-          isLight ? "text-black/55 hover:bg-black/5" : "text-white/60 hover:bg-white/10"
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        title="Voice settings"
+        className={`w-9 h-9 rounded-md flex items-center justify-center transition-colors ${
+          isLight ? "text-slate-500 hover:bg-slate-100 hover:text-slate-900" : "text-slate-400 hover:bg-slate-800 hover:text-white"
         }`}
       >
         <Settings2 className="w-4 h-4" />
       </button>
+
       {open && (
         <div
           role="dialog"
           aria-label="Voice settings"
-          className={`absolute bottom-full right-0 mb-3 w-[300px] rounded-2xl border shadow-2xl p-3.5 space-y-3 text-[12px] z-50 ${
-            isLight ? "bg-white border-black/10 text-black" : "bg-[#16161C] border-white/15 text-white"
+          className={`absolute right-0 ${placement === "above" ? "bottom-full mb-2" : "top-full mt-2"} w-[min(340px,calc(100vw-32px))] max-h-[70vh] overflow-y-auto rounded-lg border shadow-lg p-4 space-y-4 text-[13px] z-50 text-left ${
+            isLight ? "bg-white border-slate-200 text-slate-900" : "bg-[#0F172A] border-slate-700 text-slate-100"
           }`}
         >
-          <div className="font-semibold text-[12.5px]">Voice</div>
+          <div className="text-sm font-semibold">Voice settings</div>
 
-          <label className={`${row} cursor-pointer`}>
+          {/* Speech recognition */}
+          <fieldset className="space-y-3">
+            <legend className="text-xs font-semibold uppercase tracking-wide mb-2 text-slate-500">Speech recognition</legend>
+
+            <label className="flex items-start gap-2.5 cursor-pointer">
+              <input
+                type="radio"
+                name="stt-mode"
+                className="mt-1 accent-[#2563EB]"
+                checked={!usingBrowser}
+                onChange={() => onSetSttMode("server")}
+              />
+              <span>
+                <span className="font-medium">Whisper</span>
+                <span className={`ml-1.5 text-xs ${muted}`}>Default</span>
+                <span className={`block text-xs mt-0.5 ${muted}`}>{whisperWhere}</span>
+              </span>
+            </label>
+
+            <label className={`flex items-start gap-2.5 ${browserSupported && !serverForbids ? "cursor-pointer" : "cursor-not-allowed opacity-60"}`}>
+              <input
+                type="radio"
+                name="stt-mode"
+                className="mt-1 accent-[#2563EB]"
+                disabled={!browserSupported || serverForbids}
+                checked={usingBrowser}
+                onChange={() => (browserAllowed ? onSetSttMode("auto") : setShowPrivacyNotice(true))}
+              />
+              <span>
+                <span className="font-medium">Browser speech recognition</span>
+                <span className={`block text-xs mt-0.5 ${muted}`}>
+                  Shows words as you speak. Falls back to Whisper automatically if it fails.
+                </span>
+              </span>
+            </label>
+
+            {!browserSupported && (
+              <p className={`text-xs leading-relaxed rounded-md border p-2.5 ${notice}`}>
+                Browser speech recognition is unavailable in this browser. Whisper is available instead.
+              </p>
+            )}
+            {browserSupported && serverForbids && (
+              <p className={`text-xs leading-relaxed rounded-md border p-2.5 ${notice}`}>
+                Browser speech recognition is disabled by this deployment&apos;s privacy policy. Whisper is available instead.
+              </p>
+            )}
+
+            {showPrivacyNotice && (
+              <div className={`rounded-md border p-3 space-y-2 ${notice}`} role="alertdialog" aria-label="Browser speech recognition">
+                <div className="text-xs font-semibold flex items-center gap-1.5">
+                  <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" aria-hidden />
+                  Browser speech recognition
+                </div>
+                <p className="text-xs leading-relaxed">
+                  Your browser may transmit speech to a third-party speech service depending on browser implementation.
+                </p>
+                <p className="text-xs leading-relaxed">Whisper remains available as the privacy-focused alternative.</p>
+                <div className="flex items-center gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setOptIn(true);
+                      onSetSttMode("auto");
+                      setShowPrivacyNotice(false);
+                    }}
+                    className="px-3 py-1.5 text-xs font-medium rounded-md bg-[#2563EB] text-white hover:bg-[#1D4ED8]"
+                  >
+                    Enable browser recognition
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowPrivacyNotice(false)}
+                    className={`px-3 py-1.5 text-xs font-medium rounded-md border ${
+                      isLight ? "border-slate-300 bg-white hover:bg-slate-50" : "border-slate-600 hover:bg-slate-800"
+                    }`}
+                  >
+                    Keep Whisper
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {browserAllowed && (
+              <button
+                type="button"
+                onClick={() => {
+                  setOptIn(false);
+                  onSetSttMode("server");
+                }}
+                className="text-xs font-medium text-rose-600 hover:underline"
+              >
+                Withdraw browser recognition consent
+              </button>
+            )}
+          </fieldset>
+
+          {/* Wake word: needs browser recognition and keeps the mic open, so it is a separate opt-in */}
+          {onSetWakeWord && (
+            <label className={`flex items-start justify-between gap-3 pt-3 border-t ${divider} ${browserAllowed ? "cursor-pointer" : "opacity-60 cursor-not-allowed"}`}>
+              <span>
+                <span className="font-medium">&ldquo;Hey Aether&rdquo; wake word</span>
+                <span className={`block text-xs mt-0.5 ${muted}`}>
+                  {browserAllowed
+                    ? "Keeps the microphone open and listens for the wake word using browser recognition."
+                    : "Requires browser speech recognition to be enabled first."}
+                </span>
+              </span>
+              <input
+                type="checkbox"
+                className="mt-1 accent-[#2563EB]"
+                disabled={!browserAllowed}
+                checked={browserAllowed && voice.wakeWordEnabled}
+                onChange={(e) => onSetWakeWord(e.target.checked)}
+              />
+            </label>
+          )}
+
+          <label className={`flex items-start justify-between gap-3 pt-3 border-t ${divider} cursor-pointer`}>
             <span>
-              Interrupt by talking
-              <span className={`block text-[10.5px] ${muted}`}>
-                Talk over the assistant to stop it. Best with headphones — laptop speakers can trigger it.
+              <span className="font-medium">Interrupt by talking</span>
+              <span className={`block text-xs mt-0.5 ${muted}`}>
+                Speak over Aether to stop it. Best with headphones.
               </span>
             </span>
             <input
               type="checkbox"
-              className="mt-1 accent-[#7C3AED]"
+              className="mt-1 accent-[#2563EB]"
               checked={voice.bargeIn}
               onChange={(e) => onSetBargeIn(e.target.checked)}
             />
           </label>
 
-          <div>
-            <div className="mb-1">Speech recognition</div>
-            {!browserSttAllowed && (
-              <div className={`mb-1 text-[10.5px] leading-snug ${muted}`}>
-                Private mode: speech is transcribed only by this deployment&apos;s own Whisper. Browser
-                recognition and the &ldquo;Hey Aether&rdquo; wake word are off because browsers such as Chrome
-                send that audio to their own cloud.
-              </div>
-            )}
-            {(
-              [
-                ["auto", "Browser, with Whisper fallback", "Live words while you talk (Chrome / Edge)."],
-                ["server", "Whisper only", "Use if the browser mishears or shows no words."],
-              ] as const
-            ).map(([mode, label, hint]) => (
-              <label
-                key={mode}
-                className={`flex items-start gap-2 py-0.5 ${mode === "auto" && !browserSttAllowed ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
-              >
-                <input
-                  type="radio"
-                  name="stt-mode"
-                  className="mt-1 accent-[#7C3AED]"
-                  disabled={mode === "auto" && !browserSttAllowed}
-                  checked={browserSttAllowed ? voice.sttMode === mode : mode === "server"}
-                  onChange={() => onSetSttMode(mode)}
-                />
-                <span>
-                  {label}
-                  <span className={`block text-[10.5px] ${muted}`}>{hint}</span>
-                </span>
-              </label>
-            ))}
-          </div>
-
-          <div className={`rounded-xl border p-2.5 space-y-1.5 ${isLight ? "border-black/10 bg-black/[0.02]" : "border-white/10 bg-white/[0.03]"}`}>
-            <div className={row}>
-              <span className={muted}>Microphone</span>
-              {voice.conversation ? <LevelBars source="mic" bars={9} /> : <span className={muted}>off (start voice mode)</span>}
+          <dl className={`pt-3 border-t ${divider} space-y-1.5 text-xs`}>
+            <div className="flex items-center justify-between gap-3">
+              <dt className={muted}>Microphone</dt>
+              <dd>{voice.conversation ? <LevelBars source="mic" bars={9} /> : <span className={muted}>Off</span>}</dd>
             </div>
-            <div className={row}>
-              <span className={muted}>Recogniser in use</span>
-              <span>{voice.conversation ? (voice.sttEngine === "browser" ? "Browser" : "Whisper (server)") : "—"}</span>
+            <div className="flex items-center justify-between gap-3">
+              <dt className={muted}>Recogniser in use</dt>
+              <dd className="font-medium text-right">
+                {voice.conversation ? (voice.sttEngine === "browser" ? "Browser" : "Whisper") : "—"}
+              </dd>
             </div>
-            {voice.error && <div className="text-red-500 text-[11px] leading-snug">{voice.error}</div>}
-          </div>
+            {voice.error && <div className="text-rose-600 leading-snug">{voice.error}</div>}
+          </dl>
 
           <button
             type="button"
             onClick={onTestSpeaker}
-            className={`w-full flex items-center justify-center gap-1.5 py-2 rounded-xl font-semibold ${
-              isLight ? "bg-[#6D28D9]/10 text-[#5B21B6] hover:bg-[#6D28D9]/15" : "bg-[#7C3AED]/20 text-[#DDD6FE] hover:bg-[#7C3AED]/30"
+            className={`w-full flex items-center justify-center gap-1.5 py-2 rounded-md border text-xs font-medium ${
+              isLight ? "border-slate-300 hover:bg-slate-50" : "border-slate-600 hover:bg-slate-800"
             }`}
           >
-            <Volume2 className="w-3.5 h-3.5" /> Test speaker
+            <Volume2 className="w-3.5 h-3.5" aria-hidden /> Test speaker
           </button>
         </div>
       )}

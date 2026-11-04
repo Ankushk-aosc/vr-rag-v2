@@ -28,7 +28,13 @@ export async function enterImmersiveVr(renderer: THREE.WebGLRenderer): Promise<v
     optionalFeatures: ["local-floor", "bounded-floor", "hand-tracking"],
   });
 
-  await renderer.xr.setSession(session);
+  try {
+    await renderer.xr.setSession(session);
+  } catch (err) {
+    // Never leave an orphaned XR session holding the headset
+    await session.end().catch(() => {});
+    throw err;
+  }
 }
 
 /**

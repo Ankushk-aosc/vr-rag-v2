@@ -12,7 +12,7 @@ from app.config import settings
 from app.services import auth, rag_engine, voice
 from app.services.upload_security import validate_audio_upload
 from app.middleware.rate_limiter import rate_limit
-from app.routers.query import resolve_roles
+from app.routers.query import resolve_scope
 
 router = APIRouter(prefix="/api/voice", tags=["Voice Interaction"])
 client_logger = logging.getLogger("voice.client")
@@ -136,7 +136,7 @@ async def synthesize_text(
 )
 async def ask_by_voice(
     file: UploadFile = File(...),
-    family_entity_id: str = Form("default_family"),
+    family_entity_id: Optional[str] = Form(None),
     current_user: Dict[str, Any] = Depends(auth.get_current_user)
 ):
     """
@@ -155,14 +155,16 @@ async def ask_by_voice(
             grounded=False
         )
 
-    user_roles = resolve_roles(family_entity_id, current_user)
+    scope = resolve_scope(family_entity_id, current_user)
 
     try:
         rag_result = await rag_engine.execute_rag_query(
             question=transcript,
-            family_entity_id=family_entity_id,
-            user_roles=user_roles,
+            family_entity_id=scope.family_entity_id,
+            user_roles=scope.retrieval_roles,
             mode="voice",
+            user_id=scope.user_id,
+            scope=scope,
         )
     except rag_engine.RagError as e:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e))

@@ -108,8 +108,20 @@ class TenantPartition:
         user_roles: List[str],
         top_k: int = 20,
         required_tokens: Optional[List[str]] = None,
+        allowed_document_ids: Optional[Set[str]] = None,
     ) -> List[Dict[str, Any]]:
-        if not self.chunks:
+        role_set = set(user_roles or [])
+        if not self.chunks or not role_set:
+            return []  # no role, no results (fail closed; an empty role set used to mean "no filter")
+        if allowed_document_ids is not None and not allowed_document_ids:
+            return []
+        # Authorization before scoring: chunks outside the caller's scope are never ranked
+        eligible = {
+            i for i, c in enumerate(self.chunks)
+            if role_set.intersection(c.get("allowed_roles") or [])
+            and (allowed_document_ids is None or c.get("document_id") in allowed_document_ids)
+        }
+        if not eligible:
             return []
         n_docs = len(self.chunks)
         k1, b = 1.4, 0.75
@@ -121,15 +133,14 @@ class TenantPartition:
             idf = math.log(1 + (n_docs - len(plist) + 0.5) / (len(plist) + 0.5))
             weight = 3.0 if ISO_DATE_RE.fullmatch(tok) else 1.0
             for i, tf in plist:
+                if i not in eligible:
+                    continue
                 norm = tf * (k1 + 1) / (tf + k1 * (1 - b + b * self.doc_len[i] / self.avg_len))
                 scores[i] += weight * idf * norm
 
-        role_set = set(user_roles)
         results = []
         for i, s in sorted(scores.items(), key=lambda kv: kv[1], reverse=True):
             c = self.chunks[i]
-            if role_set and not role_set.intersection(c.get("allowed_roles") or []):
-                continue
             if required_tokens and not all(t in c.get("text", "") for t in required_tokens):
                 continue
             results.append({**c, "lexical_score": s})
@@ -236,6 +247,7 @@ class LexicalIndex:
         family_entity_id: str,
         user_roles: List[str],
         top_k: int = 20,
+        allowed_document_ids: Optional[Set[str]] = None,
     ) -> List[Dict[str, Any]]:
         from app.db.session import get_db_session
         from sqlalchemy import text
@@ -248,6 +260,9 @@ class LexicalIndex:
             acl_clause = "AND COALESCE(a.allowed_role, 'family_member') <> 'family_admin'"
         else:
             return []
+        if allowed_document_ids is not None and not allowed_document_ids:
+            return []
+        doc_clause = "AND d.id = ANY(:doc_ids)" if allowed_document_ids is not None else ""
         try:
             with get_db_session(family_ids=[family_entity_id]) as session:
                 engine = session.get_bind()
@@ -263,10 +278,14 @@ class LexicalIndex:
                     WHERE d.family_entity_id = :family_id
                       AND to_tsvector('english', c.content) @@ plainto_tsquery('english', :query)
                       {acl_clause}
+                      {doc_clause}
                     ORDER BY rank DESC
                     LIMIT :top_k
                 """)
-                res = session.execute(stmt, {"query": query, "family_id": family_entity_id, "top_k": top_k}).all()
+                params = {"query": query, "family_id": family_entity_id, "top_k": top_k}
+                if allowed_document_ids is not None:
+                    params["doc_ids"] = sorted(allowed_document_ids)
+                res = session.execute(stmt, params).all()
                 results = []
                 for r in res:
                     results.append({
@@ -292,9 +311,12 @@ class LexicalIndex:
         user_roles: List[str],
         top_k: int = 20,
         required_tokens: Optional[List[str]] = None,
+        allowed_document_ids: Optional[Set[str]] = None,
     ) -> List[Dict[str, Any]]:
+        if allowed_document_ids is not None:
+            allowed_document_ids = set(allowed_document_ids)
         if getattr(settings, "USE_POSTGRES_LEXICAL", False):
-            pg_res = self.search_postgres(query, family_entity_id, user_roles, top_k)
+            pg_res = self.search_postgres(query, family_entity_id, user_roles, top_k, allowed_document_ids)
             if pg_res:
                 return pg_res
         if not self.ready:
@@ -306,7 +328,7 @@ class LexicalIndex:
             partition = self._partitions.get(family_entity_id)
             if not partition:
                 return []
-            return partition.search(q_tokens, user_roles, top_k, required_tokens)
+            return partition.search(q_tokens, user_roles, top_k, required_tokens, allowed_document_ids)
 
     def _load_all_caches(self) -> int:
         if not LEXICAL_DIR.exists():
