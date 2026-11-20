@@ -71,3 +71,6 @@ htmlcov/
 # IDE and Agent tooling
 .claude/
 **/.claude/
+
+# Local archives
+.pytest_cache.zip
