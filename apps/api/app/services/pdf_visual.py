@@ -205,7 +205,8 @@ def page_text(result: Dict[str, Any], page_number: int) -> Tuple[str, List[str]]
         for axis in ("x_axis", "y_axis"):
             a = c[axis]
             if a["label"] or a["unit"]:
-                lines.append(f"{'X' if axis == 'x_axis' else 'Y'} axis: {a['label']}{f' ({a['unit']})' if a['unit'] else ''}")
+                unit_suffix = f" ({a['unit']})" if a["unit"] else ""
+                lines.append(f"{'X' if axis == 'x_axis' else 'Y'} axis: {a['label']}{unit_suffix}")
         if c["legend"]:
             lines.append("Legend: " + "; ".join(c["legend"]))
         lines += [f"Note: {n}" for n in c["annotations"] + c["footnotes"]]

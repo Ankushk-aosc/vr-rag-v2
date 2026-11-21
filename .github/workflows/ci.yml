@@ -51,6 +51,18 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # test_web_client_privacy.py runs the web client's TypeScript in Node: needs
+      # --experimental-strip-types (Node 22.6+) and the web app's packages (react)
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install web dependencies
+        working-directory: apps/web
+        run: npm ci
+
       - name: Cache embedding model
         uses: actions/cache@v4
         with:
