@@ -3,6 +3,9 @@ import io
 import logging
 import os
 import re
+import shutil
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -261,8 +264,28 @@ async def synthesize_speech_edge(text: str, voice: str = DEFAULT_AUSTRALIAN_VOIC
     return audio_buffer.getvalue()
 
 
+def _synthesize_speech_espeak(text: str, espeak: str) -> bytes:
+    """Offline TTS via the espeak-ng CLI. pyttsx3's espeak driver returns empty audio when run off the
+    main thread (synthesize_speech calls it through asyncio.to_thread), so Linux/Docker use the CLI."""
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_wav:
+        temp_wav_path = temp_wav.name
+    try:
+        subprocess.run([espeak, "-v", "en-au", "-w", temp_wav_path, "--stdin"],
+                       input=clean_text_for_speech(text), text=True, capture_output=True, timeout=60, check=True)
+        with open(temp_wav_path, "rb") as f:
+            return f.read()
+    finally:
+        try:
+            os.remove(temp_wav_path)
+        except OSError:
+            pass
+
+
 def synthesize_speech_pyttsx3(text: str) -> bytes:
-    """Fallback local offline text-to-speech using Windows native SAPI5 speech engine."""
+    """Local offline text-to-speech: Windows SAPI5 via pyttsx3, the espeak-ng CLI elsewhere."""
+    espeak = None if sys.platform == "win32" else shutil.which("espeak-ng")
+    if espeak:
+        return _synthesize_speech_espeak(text, espeak)
     try:
         import pyttsx3
     except ImportError:

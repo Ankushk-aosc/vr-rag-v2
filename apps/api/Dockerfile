@@ -10,9 +10,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UPLOADS_DIR=/data/uploads \
     SQLITE_DB_PATH=/data/app.db
 
-# tesseract-ocr backs the local OCR pipeline; libglib2.0-0 is needed by opencv-python-headless
+# tesseract-ocr backs the local OCR pipeline; libglib2.0-0 is needed by opencv-python-headless;
+# espeak-ng is the on-device text-to-speech engine used in local privacy mode
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends tesseract-ocr libglib2.0-0 \
+    && apt-get install -y --no-install-recommends tesseract-ocr libglib2.0-0 espeak-ng \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
