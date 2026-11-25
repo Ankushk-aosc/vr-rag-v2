@@ -1,0 +1,137 @@
+name: Deploy to AWS EC2
+
+# Runs automatically after the CI workflow passes on main, or manually via workflow_dispatch.
+# Requires repository secrets: EC2_HOST, EC2_USER, EC2_SSH_KEY.
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy VR-RAG to EC2
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      TARGET_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+    steps:
+      - name: Validate required deploy secrets
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+        run: |
+          if [ -z "$EC2_HOST" ] || [ -z "$EC2_USER" ] || [ -z "$EC2_SSH_KEY" ]; then
+            echo "::error::Missing EC2_HOST, EC2_USER, or EC2_SSH_KEY in repository Actions secrets."
+            exit 1
+          fi
+
+      - name: Configure SSH key
+        env:
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+      - name: Pull, selectively rebuild in parallel, migrate, and restart
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+        run: |
+          ssh -i ~/.ssh/deploy_key \
+            -o StrictHostKeyChecking=accept-new \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=20 \
+            "${EC2_USER}@${EC2_HOST}" "TARGET_SHA='${TARGET_SHA}' bash -s" <<'REMOTE'
+          set -euo pipefail
+          cd /home/ubuntu/vr-rag-v2
+
+          PREV_SHA="$(git rev-parse HEAD)"
+          git fetch origin main
+          git reset --hard "$TARGET_SHA"
+          NEW_SHA="$(git rev-parse HEAD)"
+          echo "Deploying commit $PREV_SHA -> $NEW_SHA"
+
+          if [ "$PREV_SHA" = "$NEW_SHA" ]; then
+            CHANGED="docker-compose.yml"
+          else
+            CHANGED="$(git diff --name-only "$PREV_SHA" "$NEW_SHA" || true)"
+          fi
+          echo "Changed files:"
+          echo "$CHANGED"
+
+          BUILD_SERVICES=""
+          if echo "$CHANGED" | grep -qE '^(docker-compose\.yml|apps/api/|docker/)'; then
+            BUILD_SERVICES="$BUILD_SERVICES api"
+          fi
+          if echo "$CHANGED" | grep -qE '^(docker-compose\.yml|apps/web/)'; then
+            BUILD_SERVICES="$BUILD_SERVICES web"
+          fi
+
+          export DOCKER_BUILDKIT=1
+          export COMPOSE_DOCKER_CLI_BUILD=1
+
+          if [ -n "${BUILD_SERVICES// }" ]; then
+            echo "Building in parallel:$BUILD_SERVICES"
+            sudo -E docker compose build --parallel $BUILD_SERVICES
+          else
+            echo "No container code changes; skipping Docker build."
+          fi
+
+          if echo "$CHANGED" | grep -qE '^(apps/api/alembic/|docker-compose\.yml)'; then
+            echo "Running Alembic migrations as vrrag_owner..."
+            set -a
+            . ./.env
+            set +a
+            sudo docker compose run --rm --no-deps \
+              -e DATABASE_URL="postgresql+psycopg://vrrag_owner:${MIGRATION_DB_PASSWORD}@postgres:5432/${APP_DB_NAME:-vr_rag}" \
+              api python -c "from app.db.postgres_setup import upgrade_to_head; upgrade_to_head()"
+          fi
+
+          sudo docker compose up -d --remove-orphans
+
+          echo "Waiting for API health..."
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8000/api/health >/dev/null 2>&1; then
+              echo "Local API healthy."
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              sudo docker compose logs --tail=50 api
+              exit 1
+            fi
+            sleep 4
+          done
+
+          HOST_URL="$(grep -E '^NEXT_PUBLIC_API_URL=' .env | cut -d= -f2- | tr -d '"' | tr -d "'")"
+          if [ -n "$HOST_URL" ]; then
+            curl -fsS "${HOST_URL}/api/health"
+            echo ""
+            STATUS="$(curl -fsS -o /dev/null -w '%{http_code}' "${HOST_URL}/")"
+            echo "Public HTTPS status: $STATUS"
+          fi
+
+          sudo docker image prune -f >/dev/null 2>&1 || true
+          sudo docker compose ps
+          REMOTE
+
+      - name: Clean up SSH key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key
